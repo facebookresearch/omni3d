@@ -1,0 +1,4 @@
+_BASE_: "Base.yaml"
+MODEL:
+  BACKBONE:
+    NAME: 'build_shufflenet_fpn_backbone'

@@ -1,0 +1,7 @@
+_BASE_: "Base.yaml"
+MODEL:
+  BACKBONE:
+    NAME: 'build_resnet_from_vision_fpn_backbone'
+  RESNETS:
+    DEPTH: 34
+    TORCHVISION: True

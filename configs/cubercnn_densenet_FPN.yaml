@@ -1,0 +1,4 @@
+_BASE_: "Base.yaml"
+MODEL:
+  BACKBONE:
+    NAME: 'build_densenet_fpn_backbone'

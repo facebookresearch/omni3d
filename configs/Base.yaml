@@ -1,0 +1,78 @@
+SOLVER:
+  TYPE: "sgd"
+  IMS_PER_BATCH: 16
+  BASE_LR: 0.01
+  STEPS: (60000, 80000)
+  MAX_ITER: 90000
+  WEIGHT_DECAY: 0.0001
+  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+INPUT:
+  MIN_SIZE_TRAIN: (512,)
+  MIN_SIZE_TEST: 512
+  MAX_SIZE_TRAIN: 4096
+  MAX_SIZE_TEST: 4096
+TEST:
+  VISIBILITY_THRES: 0.33333333
+  TRUNCATION_THRES: 0.33333333
+DATASETS:
+  TRAIN: ('KITTI_train', 'KITTI_val', 'SUNRGBD_train', 'SUNRGBD_val')
+  TEST: ('KITTI_test', 'SUNRGBD_test') 
+  CATEGORY_NAMES: ('pedestrian', 'car', 'chair', 'bed')
+  IGNORE_NAMES: "['dontcare', 'ignore', 'void']"
+DATALOADER:
+  SAMPLER_TRAIN: "RepeatFactorTrainingSampler"
+  REPEAT_THRESHOLD: 0.001
+MODEL:
+  PIXEL_MEAN: [103.530, 116.280, 123.675]
+  PIXEL_STD: [57.375, 57.120, 58.395]
+  META_ARCHITECTURE: "RCNN3D"
+  MASK_ON: False
+  STABILIZE: 0.02
+  USE_BN: True
+  BACKBONE:
+    FREEZE_AT: 0
+  FPN:
+    IN_FEATURES: ['p2', 'p3', 'p4', 'p5', 'p6']
+  ANCHOR_GENERATOR:
+    SIZES: [[32], [64], [128], [256], [512]]  # One size for each in feature map
+    ASPECT_RATIOS: [[0.5, 1.0, 2.0]]  # Three aspect ratios (same for all in feature maps)
+  RPN:
+    HEAD_NAME: "StandardRPNHead"
+    IN_FEATURES: ['p2', 'p3', 'p4', 'p5', 'p6']
+    PRE_NMS_TOPK_TRAIN: 2000  # Per FPN level
+    PRE_NMS_TOPK_TEST: 1000  # Per FPN level
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 1000
+    BOUNDARY_THRESH: -1
+    OBJECTNESS_UNCERTAINTY: "IoUness"
+    IOU_THRESHOLDS: [0.05, 0.05]
+    POSITIVE_FRACTION: 1.0
+  PROPOSAL_GENERATOR:
+    NAME: "RPNWithIgnore"
+  ROI_HEADS:
+    NAME: "ROIHeads3D"
+    IN_FEATURES: ["p2", "p3", "p4", "p5", 'p6']
+    BATCH_SIZE_PER_IMAGE: 512
+    SCORE_THRESH_TEST: 0.01
+    NUM_CLASSES: 4
+  ROI_BOX_HEAD:
+    NAME: "FastRCNNConvFCHead"
+    NUM_FC: 2
+    POOLER_RESOLUTION: 7
+  ROI_CUBE_HEAD:
+    NAME: 'CubeHead'
+    Z_TYPE: 'direct'
+    POSE_TYPE: '6d'
+    NUM_FC: 2
+    SHARED_FC: True
+    USE_CONFIDENCE: 1.0
+    LOSS_W_3D: 1.0
+    POOLER_TYPE: 'ROIAlignV2'
+    POOLER_RESOLUTION: 7
+    DIMS_PRIORS_ENABLED: True
+    DISENTANGLED_LOSS: True
+    ALLOCENTRIC_POSE: True
+    VIRTUAL_FOCAL: 512.0
+    VIRTUAL_DEPTH: True
+    CHAMFER_POSE: True
+VERSION: 2
