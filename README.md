@@ -13,7 +13,7 @@
 <tr>
 	<td width="60%">
 		<p align="center">
-			Zero-shot (+ tracking) on <a href="https://about.facebook.com/realitylabs/projectaria">Aria's</a> AR headset
+			Zero-shot (+ tracking) on <a href="https://about.facebook.com/realitylabs/projectaria">Project Aria</a> data
 			<img src=".github/generalization_demo.gif" alt="Aria demo video"/ height="300">
 		</p>
 	</td>
