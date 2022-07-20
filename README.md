@@ -39,7 +39,8 @@
 - [PyTorch][pyt]
 - [PyTorch3D][py3d]
 - [COCO][coco]
-- Cuda 10.1
+- [Cuda 10.1][cuda]
+- [cuDNN 7.6][cudnn]
 
 If you are on a server with multiple versions of conda, gcc, cuda and cudnn, type the following first: 
 
@@ -122,4 +123,6 @@ Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in you
 [py3d]: https://github.com/facebookresearch/pytorch3d
 [pyt]: https://pytorch.org/
 [coco]: https://cocodataset.org/
+[cuda]: https://developer.nvidia.com/cuda-downloads
+[cudnn]: https://developer.nvidia.com/cudnn
 
