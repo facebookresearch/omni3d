@@ -39,7 +39,15 @@
 - [PyTorch][pyt]
 - [PyTorch3D][py3d]
 - [COCO][coco]
+- Cuda 10.1
 
+If you are on a server with multiple versions of conda, gcc, cuda and cudnn, type the following first: 
+
+```bash
+module load anaconda3/2021.05 gcc/7.1.0 cuda/10.1 cudnn/v7.6.5.32-cuda.10.1
+```
+
+Next install the environment as follows:
 ``` bash
 # setup new evironment
 conda create -n cubercnn python=3.8
@@ -58,20 +66,27 @@ conda install -c conda-forge scipy seaborn
 ```
 ## Demo
 
-Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [Model Zoo](MODEL_ZOO.md) for more models. 
+
+
+First download sample COCO images to the `datasets/coco_examples` folder:
 
 ``` bash
 # Download example COCO images
 sh demo/download_demo_COCO_images.sh
+```
 
+Finally run:
+
+```bash
 # Run an example demo
 python demo/demo.py \
 --config cubercnn://omni3d/cubercnn_DLA_FPN.yaml \
---input-folder "datasets/coco_examples"
+--input-folder "datasets/coco_examples" \
 --threshold 0.25 --display \
 MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA_FPN.pth \
 OUTPUT_DIR output/demo 
 ```
+The above code runs Cube R-CNN DLA34 model trained on the full Omni3D dataset on a set of sample COCO images. See [Model Zoo](MODEL_ZOO.md) for more models. 
 
 See [demo.py](demo/demo.py) for more details.
 
