@@ -42,7 +42,7 @@
 - [Cuda 10.1][cuda]
 - [cuDNN 7.6][cudnn]
 
-If you are on a server with multiple versions of conda, gcc, cuda and cudnn, type the following first: 
+Tip: If you are on a server with multiple versions of conda, gcc, cuda and cudnn, type the following first: 
 
 ```bash
 module load anaconda3/2021.05 gcc/7.1.0 cuda/10.1 cudnn/v7.6.5.32-cuda.10.1
