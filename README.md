@@ -66,10 +66,10 @@ sh demo/download_demo_COCO_images.sh
 
 # Run an example demo
 python demo/demo.py \
---config cubercnn://omni3d/cubercnn_DLA_FPN.yaml \
---input-folder "datasets/coco_examples"
+--config cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
+--input-folder "datasets/coco_examples" \
 --threshold 0.25 --display \
-MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA_FPN.pth \
+MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
 OUTPUT_DIR output/demo 
 ```
 
