@@ -81,12 +81,13 @@ Finally run:
 ```bash
 # Run an example demo
 python demo/demo.py \
---config cubercnn://omni3d/cubercnn_DLA_FPN.yaml \
+--config cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
 --input-folder "datasets/coco_examples" \
 --threshold 0.25 --display \
-MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA_FPN.pth \
-OUTPUT_DIR output/demo 
+MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
+OUTPUT_DIR output/demo
 ```
+
 The above code runs Cube R-CNN DLA34 model trained on the full Omni3D dataset on a set of sample COCO images. See [Model Zoo](MODEL_ZOO.md) for more models. 
 
 See [demo.py](demo/demo.py) for more details.
