@@ -6,7 +6,7 @@
 
 [Garrick Brazil][gb], [Julian Straub][js], [Nikhila Ravi][nr], [Justin Johnson][jj], [Georgia Gkioxari][gg]
 
-[[`Project Page`](https://garrickbrazil.com/omni3d)] [[`arXiv`](https://arxiv.org/abs/placeholder)] [[`BibTeX`](#citing)]
+[[`Project Page`](https://garrickbrazil.com/omni3d)] [[`arXiv`](https://arxiv.org/abs/2207.10660)] [[`BibTeX`](#citing)]
 
 
 <table style="border-collapse: collapse; border: none;">
@@ -56,9 +56,12 @@ python -m pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wh
 # other dependencies
 conda install -c conda-forge scipy seaborn
 ```
+
+We used cuda/10.1 and cudnn/v7.6.5.32 for our experiments, but expect that slight variations in versions are also compatible. 
+
 ## Demo
 
-Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [Model Zoo](MODEL_ZOO.md) for more models. 
+Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [Model Zoo](MODEL_ZOO.md) for more model variations. 
 
 ``` bash
 # Download example COCO images
@@ -93,7 +96,7 @@ Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in you
 @article{brazil2022omni3d,
   author =       {Garrick Brazil and Julian Straub and Nikhila Ravi and Justin Johnson and Georgia Gkioxari},
   title =        {{Omni3D}: A Large Benchmark and Model for {3D} Object Detection in the Wild},
-  journal =      {arXiv:placeholder},
+  journal =      {arXiv:2207.10660},
   year =         {2022}
 }
 ```
