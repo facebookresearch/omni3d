@@ -33,7 +33,17 @@
 </p>
 -->
 
-## Installation Requirements
+## Content:
+1. [Installation](#installation)
+2. [Demo](#demo)
+3. [Omni3D Data](#data)
+4. [Training Cube R-CNN](#training)
+5. [Inference & Evaluation](#inference)
+6. [License](#license)
+7. [Citing](#citing)
+
+
+## Installation <a name="installation"></a>
 
 - [Detectron2][d2]
 - [PyTorch][pyt]
@@ -57,11 +67,11 @@ python -m pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wh
 conda install -c conda-forge scipy seaborn
 ```
 
-We used cuda/10.1 and cudnn/v7.6.5.32 for our experiments, but expect that slight variations in versions are also compatible. 
+We used `cuda/10.1` and `cudnn/v7.6.5.32` for our experiments, but expect that slight variations in versions are also compatible. 
 
-## Demo
+## Demo <a name="demo"></a>
 
-Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [Model Zoo](MODEL_ZOO.md) for more model variations. 
+Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [`MODEL_ZOO.md`](MODEL_ZOO.md) for more model checkpoints. 
 
 ``` bash
 # Download example COCO images
@@ -76,19 +86,71 @@ MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
 OUTPUT_DIR output/demo 
 ```
 
-See [demo.py](demo/demo.py) for more details.
+See [`demo.py`](demo/demo.py) for more details.
 
+## Omni3D Data <a name="data"></a>
+See [`DATA.md`](DATA.md) for instructions on how to download and set up images and annotations of our Omni3D benchmark for training and evaluating Cube R-CNN. 
 
-## Training on Omni3D
-Coming soon!
+## Training Cube R-CNN on Omni3D <a name="training"></a>
 
-## Inference on Omni3D
-Coming soon!
+We provide config files for trainin Cube R-CNN on
+* Omni3D [`configs/Base_Omni3D.yaml`](configs/Base_Omni3D.yaml)
+* Omni3D indoor [`configs/Base_Omni3D_in.yaml`](configs/Base_Omni3D_in.yaml)
+* Omni3D outdoor [`configs/Base_Omni3D_out.yaml`](configs/Base_Omni3D_out.yaml)
 
-## License
-Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE)
+We train on 48 GPUs using [submitit](https://github.com/facebookincubator/submitit) which wraps the following training command
+```bash
+python tools/train_net.py \
+  --config-file configs/Base_Omni3D.yaml \
+  OUTPUT_DIR output/omni3d_example_run
+```
 
-## Citing
+Note that our provided configs specify hyperparameters tuned for 48 GPUs. You could train on 1 GPU (though with no guarantee of reaching the final performance) as follows
+``` bash
+python tools/train_net.py \
+  --config-file configs/Base_Omni3D.yaml --num-gpus 1 \
+  SOLVER.IMS_PER_BATCH 4 SOLVER.BASE_LR 0.000625 \
+  SOLVER.MAX_ITER 5568000 SOLVER.STEPS (3340800, 4454400) \
+  SOLVER.WARMUP_ITERS 174000 TEST.EVAL_PERIOD 1392000 \
+  VIS_PERIOD 111360 OUTPUT_DIR output/omni3d_example_run
+```
+
+### Tips for tuning hyperparameters <a name="tuning"></a>
+
+Our Omni3D configs are designed for multi-node training. 
+
+We follow a simple scaling rule for adjusting to different system configurations. We find that 16GB GPUs (e.g. V100s) can hold 4 images per batch when training with a DLA34 backbone. If $g$ is the number of GPUs, then the number of images per batch is $b = 4g$. Let's define $r$ to be the ratio between the recommended batch size $b_0$ and the actual batch size $b$, namely $r = b_0 / b$. The values for $b_0$ can be found in the configs. For instance, for the full Omni3D training $b_0 = 196$ as shown [here](https://github.com/fairinternal/cubercnn/blob/main/configs/Base_Omni3D.yaml#L4).
+We scale the following hyperparameters as follows:
+
+  * `SOLVER.IMS_PER_BATCH` $=b$
+  * `SOLVER.BASE_LR` $/=r$
+  * `SOLVER.MAX_ITER`  $*=r$
+  * `SOLVER.STEPS`  $*=r$
+  * `SOLVER.WARMUP_ITERS` $*=r$
+  * `TEST.EVAL_PERIOD` $*=r$
+  * `VIS_PERIOD`  $*=r$
+
+We tune the number of GPUs $g$ such that `SOLVER.MAX_ITER` is in a range between about 90 - 120k iterations. We cannot guarantee that all GPU configurations perform the same. We expect noticeable performance differences at extreme ends of resources (e.g. when using 1 GPU).
+
+## Inference on Omni3D <a name="inference"></a>
+
+To evaluate trained models from Cube R-CNN's [`MODEL_ZOO.md`](MODEL_ZOO.md), run
+
+```
+python tools/train_net.py \
+  --eval-only --config cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
+  MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
+  OUTPUT_DIR output/evaluation
+```
+
+Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
+
+[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
+
+## License <a name="license"></a>
+Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE.md)
+
+## Citing <a name="citing"></a>
 
 Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in your research or refer to our results.
 
@@ -100,6 +162,76 @@ Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in you
   year =         {2022}
 }
 ```
+
+If you use the Omni3D benchmark, we kindly ask you to additionally cite all datasets. BibTex entries are provided below
+
+<details><summary>Dataset BibTex</summary>
+
+```BibTex
+@inproceedings{Geiger2012CVPR,
+  author = {Andreas Geiger and Philip Lenz and Raquel Urtasun},
+  title = {Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite},
+  booktitle = {CVPR},
+  year = {2012}
+}
+```
+
+```BibTex
+@inproceedings{Geiger2012CVPR,
+  author = {Andreas Geiger and Philip Lenz and Raquel Urtasun},
+  title = {Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite},
+  booktitle = {CVPR},
+  year = {2012}
+}
+```
+
+```BibTex
+@inproceedings{caesar2020nuscenes,
+  title={nuscenes: A multimodal dataset for autonomous driving},
+  author={Caesar, Holger and Bankiti, Varun and Lang, Alex H and Vora, Sourabh and Liong, Venice Erin and Xu, Qiang and Krishnan, Anush and Pan, Yu and Baldan, Giancarlo and Beijbom, Oscar},
+  booktitle={CVPR},
+  year={2020}
+}
+```
+
+```BibTex
+@inproceedings{song2015sun,
+  title={Sun rgb-d: A rgb-d scene understanding benchmark suite},
+  author={Song, Shuran and Lichtenberg, Samuel P and Xiao, Jianxiong},
+  booktitle={CVPR},
+  year={2015}
+}
+```
+
+```BibTex
+@inproceedings{dehghan2021arkitscenes,
+  title={{ARK}itScenes - A Diverse Real-World Dataset for 3D Indoor Scene Understanding Using Mobile {RGB}-D Data},
+  author={Gilad Baruch and Zhuoyuan Chen and Afshin Dehghan and Tal Dimry and Yuri Feigin and Peter Fu and Thomas Gebauer and Brandon Joffe and Daniel Kurz and Arik Schwartz and Elad Shulman},
+  booktitle={NeurIPS Datasets and Benchmarks Track (Round 1)},
+  year={2021},
+}
+```
+
+```BibTex
+@inproceedings{hypersim,
+  author    = {Mike Roberts AND Jason Ramapuram AND Anurag Ranjan AND Atulit Kumar AND
+                 Miguel Angel Bautista AND Nathan Paczan AND Russ Webb AND Joshua M. Susskind},
+  title     = {{Hypersim}: {A} Photorealistic Synthetic Dataset for Holistic Indoor Scene Understanding},
+  booktitle = {ICCV},
+  year      = {2021},
+}
+```
+
+```BibTex
+@article{objectron2021,
+  title={Objectron: A Large Scale Dataset of Object-Centric Videos in the Wild with Pose Annotations},
+  author={Ahmadyan, Adel and Zhang, Liangkai and Ablavatski, Artsiom and Wei, Jianing and Grundmann, Matthias},
+  journal={CVPR},
+  year={2021},
+}
+```
+
+</details>
 
 [gg]: https://github.com/gkioxari
 [jj]: https://github.com/jcjohnson

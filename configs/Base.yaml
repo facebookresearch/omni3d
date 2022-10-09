@@ -1,27 +1,33 @@
 SOLVER:
   TYPE: "sgd"
-  IMS_PER_BATCH: 16
-  BASE_LR: 0.01
-  STEPS: (60000, 80000)
-  MAX_ITER: 90000
+  IMS_PER_BATCH: 32
+  BASE_LR: 0.02
+  STEPS: (19200, 25600)
+  MAX_ITER: 32000
   WEIGHT_DECAY: 0.0001
   LR_SCHEDULER_NAME: "WarmupMultiStepLR"
 INPUT:
-  MIN_SIZE_TRAIN: (512,)
+  MIN_SIZE_TRAIN: (256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 640,)
   MIN_SIZE_TEST: 512
   MAX_SIZE_TRAIN: 4096
   MAX_SIZE_TEST: 4096
 TEST:
   VISIBILITY_THRES: 0.33333333
   TRUNCATION_THRES: 0.33333333
+  EVAL_PERIOD: 16000
 DATASETS:
-  TRAIN: ('KITTI_train', 'KITTI_val', 'SUNRGBD_train', 'SUNRGBD_val')
-  TEST: ('KITTI_test', 'SUNRGBD_test') 
-  CATEGORY_NAMES: ('pedestrian', 'car', 'chair', 'bed')
+  TRAIN: ('KITTI_train', 'KITTI_val')
+  TEST: ('KITTI_test',) 
+  CATEGORY_NAMES: ('pedestrian', 'car', 'cyclist', 'van', 'truck', 'tram', 'person')
   IGNORE_NAMES: "['dontcare', 'ignore', 'void']"
+  MIN_HEIGHT_THRES: 0.05
+  TRUNCATION_THRES: 0.75
+  VISIBILITY_THRES: 0.25
+  TRUNC_2D_BOXES: True
+VIS_PERIOD: 640
 DATALOADER:
   SAMPLER_TRAIN: "RepeatFactorTrainingSampler"
-  REPEAT_THRESHOLD: 0.001
+  REPEAT_THRESHOLD: 0.1
 MODEL:
   PIXEL_MEAN: [103.530, 116.280, 123.675]
   PIXEL_STD: [57.375, 57.120, 58.395]
@@ -31,6 +37,9 @@ MODEL:
   USE_BN: True
   BACKBONE:
     FREEZE_AT: 0
+    NAME: 'build_dla_from_vision_fpn_backbone'
+  DLA:
+    TYPE: 'dla34'
   FPN:
     IN_FEATURES: ['p2', 'p3', 'p4', 'p5', 'p6']
   ANCHOR_GENERATOR:
@@ -54,7 +63,7 @@ MODEL:
     IN_FEATURES: ["p2", "p3", "p4", "p5", 'p6']
     BATCH_SIZE_PER_IMAGE: 512
     SCORE_THRESH_TEST: 0.01
-    NUM_CLASSES: 4
+    NUM_CLASSES: 43
   ROI_BOX_HEAD:
     NAME: "FastRCNNConvFCHead"
     NUM_FC: 2

@@ -178,10 +178,6 @@ class FastRCNNOutputs(FastRCNNOutputLayers):
 
         normalize_factor = max(gt_classes.numel(), 1.0)
 
-        fg_mask = (gt_classes >= 0) & (gt_classes < self.num_classes)
-        iouness_targets = matched_pairwise_iou(Boxes(proposal_boxes[fg_mask]), Boxes(gt_boxes[fg_mask]))
-        iouness_weights = iouness_targets.clone()
-
         '''
         Standard Faster R-CNN losses
         '''
@@ -195,7 +191,7 @@ class FastRCNNOutputs(FastRCNNOutputLayers):
             "BoxHead/loss_box_reg": loss_box_reg,
         }
         
-        return {k: v * self.loss_weight.get(k, 1.0) for k, v in losses.items()}, None
+        return {k: v * self.loss_weight.get(k, 1.0) for k, v in losses.items()}
     
     def box_reg_loss(self, proposal_boxes, gt_boxes, pred_deltas, gt_classes, reduction='mean'):
         """

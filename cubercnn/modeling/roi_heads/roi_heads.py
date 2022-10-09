@@ -214,9 +214,9 @@ class ROIHeads3D(StandardROIHeads):
 
         if self.training:
 
-            losses, iouness_weights = self._forward_box(features, proposals)
+            losses = self._forward_box(features, proposals)
             if self.loss_w_3d > 0:
-                losses.update(self._forward_cube(features, proposals, Ks, im_dims, im_scales_ratio, iouness_weights=iouness_weights))
+                losses.update(self._forward_cube(features, proposals, Ks, im_dims, im_scales_ratio))
 
             return [], losses
         
@@ -266,7 +266,7 @@ class ROIHeads3D(StandardROIHeads):
         del box_features
 
         if self.training:
-            losses, iouness_weights = self.box_predictor.losses(
+            losses = self.box_predictor.losses(
                 predictions, proposals, 
             )
             pred_boxes = self.box_predictor.predict_boxes_for_gt_classes(
@@ -283,7 +283,7 @@ class ROIHeads3D(StandardROIHeads):
                     )
                     for proposals_per_image, pred_boxes_per_image in zip(proposals, pred_boxes):
                         proposals_per_image.proposal_boxes = Boxes(pred_boxes_per_image)
-            return losses, iouness_weights
+            return losses
         else:
             pred_instances, _ = self.box_predictor.inference(predictions, proposals, )
             return pred_instances
@@ -319,7 +319,7 @@ class ROIHeads3D(StandardROIHeads):
 
         return proposal_boxes_scaled
     
-    def _forward_cube(self, features, instances, Ks, im_current_dims, im_scales_ratio, iouness_weights=None):
+    def _forward_cube(self, features, instances, Ks, im_current_dims, im_scales_ratio):
         
         features = [features[f] for f in self.in_features]
 
@@ -450,8 +450,11 @@ class ROIHeads3D(StandardROIHeads):
             # if uncertainty is available, collect the per-category predictions.
             cube_uncert = cube_uncert[fg_inds, box_classes]
         
-        cube_x = pred_src_x.clone()
-        cube_y = pred_src_y.clone()
+        cube_2d_deltas = cube_2d_deltas[fg_inds, box_classes, :]
+        
+        # apply our predicted deltas based on src boxes.
+        cube_x = src_ctr_x + src_widths * cube_2d_deltas[:, 0]
+        cube_y = src_ctr_y + src_heights * cube_2d_deltas[:, 1]
         
         cube_xy = torch.cat((cube_x.unsqueeze(1), cube_y.unsqueeze(1)), dim=1)
 
@@ -469,7 +472,6 @@ class ROIHeads3D(StandardROIHeads):
             # To compare with GTs, we need the pose to be egocentric, not allocentric
             cube_pose_allocentric = cube_pose
             cube_pose = util.R_from_allocentric(Ks_scaled_per_box, cube_pose, u=cube_x.detach(), v=cube_y.detach())
-
             
         cube_z = cube_z.squeeze()
         
@@ -503,9 +505,6 @@ class ROIHeads3D(StandardROIHeads):
 
         if self.virtual_depth:
             cube_z = (cube_z * virtual_to_real)
-        
-        cube_x_for_corners = cube_x
-        cube_y_for_corners = cube_y
 
         if self.training:
 
@@ -558,17 +557,13 @@ class ROIHeads3D(StandardROIHeads):
                 cube_dis_y3d_from_z = cube_z * (gt_2d[:, 1] - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
                 cube_dis_z = torch.cat((torch.stack((cube_dis_x3d_from_z, cube_dis_y3d_from_z, cube_z)).T, gt_dims), dim=1)
                 dis_z_corners = util.get_cuboid_verts_faces(cube_dis_z, gt_poses)[0]
-
                 
-                # Compute losses
-                if not cube_2d_deltas is None:
-
-                    # compute disentangled XY corners
-                    cube_dis_x3d = gt_z * (cube_x - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
-                    cube_dis_y3d = gt_z * (cube_y - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
-                    cube_dis_XY = torch.cat((torch.stack((cube_dis_x3d, cube_dis_y3d, gt_z)).T, gt_dims), dim=1)
-                    dis_XY_corners = util.get_cuboid_verts_faces(cube_dis_XY, gt_poses)[0]
-                    loss_xy = self.l1_loss(dis_XY_corners, gt_corners).contiguous().view(n, -1).mean(dim=1)
+                # compute disentangled XY corners
+                cube_dis_x3d = gt_z * (cube_x - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
+                cube_dis_y3d = gt_z * (cube_y - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
+                cube_dis_XY = torch.cat((torch.stack((cube_dis_x3d, cube_dis_y3d, gt_z)).T, gt_dims), dim=1)
+                dis_XY_corners = util.get_cuboid_verts_faces(cube_dis_XY, gt_poses)[0]
+                loss_xy = self.l1_loss(dis_XY_corners, gt_corners).contiguous().view(n, -1).mean(dim=1)
                     
                 # Pose
                 dis_pose_corners = util.get_cuboid_verts_faces(gt_box3d, cube_pose)[0]
@@ -655,8 +650,8 @@ class ROIHeads3D(StandardROIHeads):
                 predictions together and compute a chamfer or l1 loss vs. cube corners.
                 '''
                 
-                cube_dis_x3d_from_z = cube_z * (cube_x_for_corners - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
-                cube_dis_y3d_from_z = cube_z * (cube_y_for_corners - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
+                cube_dis_x3d_from_z = cube_z * (cube_x - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
+                cube_dis_y3d_from_z = cube_z * (cube_y - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
                 cube_dis_z = torch.cat((torch.stack((cube_dis_x3d_from_z, cube_dis_y3d_from_z, cube_z)).T, cube_dims), dim=1)
                 dis_z_corners_joint = util.get_cuboid_verts_faces(cube_dis_z, cube_pose)[0]
                 
@@ -679,7 +674,7 @@ class ROIHeads3D(StandardROIHeads):
             storage.put_scalar(prefix + 'xy_error', xy_error.mean().item(), smoothing_hint=False)
             storage.put_scalar(prefix + 'z_close', (z_error<0.20).float().mean().item(), smoothing_hint=False)
             
-            storage.put_scalar(prefix + 'total_3D_loss', self.loss_w_3d * self.safely_reduce_losses(total_3D_loss_for_reporting, iouness_weights), smoothing_hint=False)
+            storage.put_scalar(prefix + 'total_3D_loss', self.loss_w_3d * self.safely_reduce_losses(total_3D_loss_for_reporting), smoothing_hint=False)
 
             if self.inverse_z_weight:
                 '''
@@ -723,35 +718,35 @@ class ROIHeads3D(StandardROIHeads):
                 if self.loss_w_joint > 0:
                     loss_joint *= uncert_sf
 
-                losses.update({prefix + 'uncert': self.use_confidence*self.safely_reduce_losses(cube_uncert.clone(), iouness_weights)})
+                losses.update({prefix + 'uncert': self.use_confidence*self.safely_reduce_losses(cube_uncert.clone())})
                 storage.put_scalar(prefix + 'conf', torch.exp(-cube_uncert).mean().item(), smoothing_hint=False)
 
             # store per batch loss stats temporarily
             self.batch_losses = [batch_losses.mean().item() for batch_losses in total_3D_loss_for_reporting.split(num_boxes_per_image)]
             
             losses.update({
-                prefix + 'loss_dims': self.safely_reduce_losses(loss_dims, iouness_weights) * self.loss_w_dims * self.loss_w_3d,
+                prefix + 'loss_dims': self.safely_reduce_losses(loss_dims) * self.loss_w_dims * self.loss_w_3d,
             })
 
             if not cube_2d_deltas is None:
                 losses.update({
-                    prefix + 'loss_xy': self.safely_reduce_losses(loss_xy, iouness_weights) * self.loss_w_xy * self.loss_w_3d,
+                    prefix + 'loss_xy': self.safely_reduce_losses(loss_xy) * self.loss_w_xy * self.loss_w_3d,
                 })
 
             if not loss_z is None:
                 losses.update({
-                    prefix + 'loss_z': self.safely_reduce_losses(loss_z, iouness_weights) * self.loss_w_z * self.loss_w_3d,
+                    prefix + 'loss_z': self.safely_reduce_losses(loss_z) * self.loss_w_z * self.loss_w_3d,
                 })
 
             if loss_pose is not None:
                 
                 losses.update({
-                    prefix + 'loss_pose': self.safely_reduce_losses(loss_pose, iouness_weights) * self.loss_w_pose * self.loss_w_3d, 
+                    prefix + 'loss_pose': self.safely_reduce_losses(loss_pose) * self.loss_w_pose * self.loss_w_3d, 
                 })
 
             if self.loss_w_joint > 0:
                 if valid_joint.any():
-                    losses.update({prefix + 'loss_joint': self.safely_reduce_losses(loss_joint[valid_joint], iouness_weights) * self.loss_w_joint * self.loss_w_3d})
+                    losses.update({prefix + 'loss_joint': self.safely_reduce_losses(loss_joint[valid_joint]) * self.loss_w_joint * self.loss_w_3d})
 
             return losses
 
@@ -892,10 +887,7 @@ class ROIHeads3D(StandardROIHeads):
         return proposals_with_gt
 
 
-    def safely_reduce_losses(self, loss, iouness_weights=None):
-
-        if iouness_weights is not None:
-            loss *= iouness_weights
+    def safely_reduce_losses(self, loss):
 
         valid = (~(loss.isinf())) & (~(loss.isnan()))
 
