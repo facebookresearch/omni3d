@@ -4,7 +4,7 @@
 
 # Omni3D and Cube R-CNN License
 https://github.com/facebookresearch/omni3d
-https://github.com/facebookresearch/omni3d/blob/main/LICENSE
+https://github.com/facebookresearch/omni3d/blob/main/LICENSE.md
 
 Attribution-NonCommercial 4.0 International
 
