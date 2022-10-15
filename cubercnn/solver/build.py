@@ -33,7 +33,7 @@ def build_optimizer(cfg, model):
             if isinstance(module, norm_module_types) and (cfg.SOLVER.WEIGHT_DECAY_NORM is not None):
                 weight_decay = cfg.SOLVER.WEIGHT_DECAY_NORM
             
-            if key == "bias":
+            elif key == "bias":
                 if (cfg.SOLVER.BIAS_LR_FACTOR is not None):
                     lr = cfg.SOLVER.BASE_LR * cfg.SOLVER.BIAS_LR_FACTOR
                 if (cfg.SOLVER.WEIGHT_DECAY_BIAS is not None):
