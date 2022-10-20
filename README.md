@@ -33,7 +33,7 @@
 </p>
 -->
 
-## Content:
+## Table of Contents:
 1. [Installation](#installation)
 2. [Demo](#demo)
 3. [Omni3D Data](#data)
@@ -132,6 +132,10 @@ We scale the following hyperparameters as follows:
 
 We tune the number of GPUs $g$ such that `SOLVER.MAX_ITER` is in a range between about 90 - 120k iterations. We cannot guarantee that all GPU configurations perform the same. We expect noticeable performance differences at extreme ends of resources (e.g. when using 1 GPU).
 
+Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
+
+[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
+
 ## Inference on Omni3D <a name="inference"></a>
 
 To evaluate trained models from Cube R-CNN's [`MODEL_ZOO.md`](MODEL_ZOO.md), run
@@ -143,9 +147,41 @@ python tools/train_net.py \
   OUTPUT_DIR output/evaluation
 ```
 
-Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
+### Performance on Test Set
+The evaluation produces two tables which summarize performance on the test set. The first is a performance analysis table and the second is the Omni3D performance table. The latter should be used to compare to Cube R-CNN.
 
-[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
+For the `DLA34` Cube R-CNN model trained on the full Omni3D, the tables are:
+
+1. Performance Analysis Table
+
+
+|     Dataset      |  #iters  | AP2D    | AP3D    | AP3D@15   | AP3D@25   | AP3D@50   | AP3D-N   | AP3D-M   | AP3D-F   |
+|------------------|----------|---------|---------|-----------|-----------|-----------|----------|----------|----------|
+|   SUNRGBD_test   |  final   | 15.6662 | 15.4155 | 21.7293   | 17.0427   | 5.22497   | 15.4156  | nan      | nan      |
+|  Hypersim_test   |  final   | 12.2447 | 7.48912 | 10.05     | 7.59755   | 2.27113   | 7.96361  | 0.586047 | 0        |
+| ARKitScenes_test |  final   | 41.3007 | 42.0249 | 53.3787   | 45.8009   | 19.5674   | 42.0256  | 0        | nan      |
+|  Objectron_test  |  final   | 56.4603 | 53.8335 | 68.4659   | 57.6667   | 25.5449   | 53.8335  | nan      | nan      |
+|    KITTI_test    |  final   | 41.3125 | 32.7199 | 42.0242   | 34.6804   | 16.3361   | 56.8205  | 36.2016  | 16.6963  |
+|  nuScenes_test   |  final   | 36.31   | 30.1744 | 39.3073   | 32.3152   | 14.6941   | 47.7772  | 34.9152  | 11.9943  |
+|     **Concat**   |  final   | 27.6029 | 23.8362 | 31.3713   | 25.5598   | 10.1012   | 28.5417  | 12.0974  | 8.56238  |
+
+2. Omni3D Performance Table -- To be used to compare with Cube R-CNN
+
+|     Dataset      |  #iters  | AP2D    | AP3D    |
+|------------------|----------|---------|---------|
+|   SUNRGBD_test   |  final   | 15.6662 | 15.4155 |
+|  Hypersim_test   |  final   | 12.2447 | 7.48912 |
+| ARKitScenes_test |  final   | 41.3007 | 42.0249 |
+|  Objectron_test  |  final   | 56.4603 | 53.8335 |
+|    KITTI_test    |  final   | 41.3125 | 32.7199 |
+|  nuScenes_test   |  final   | 36.31   | 30.1744 |
+|    Omni3D_Out    |  final   | 38.8662 | 33.0987 |
+|    Omni3D_In     |  final   | 23.3653 | 20.589  |
+|    **Omni3D**    |  final   | 27.6029 | 23.8362 |
+
+The Omni3D entry (last row) gives performance on the *full Omni3D test set* and is what we report in our paper.
+The Omni3D_Out and Omni3D_In entries show perfomance on the outdoor and indoor subsets of the test set, respectively. 
+
 
 ## License <a name="license"></a>
 Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE.md)
