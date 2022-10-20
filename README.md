@@ -132,10 +132,6 @@ We scale the following hyperparameters as follows:
 
 We tune the number of GPUs $g$ such that `SOLVER.MAX_ITER` is in a range between about 90 - 120k iterations. We cannot guarantee that all GPU configurations perform the same. We expect noticeable performance differences at extreme ends of resources (e.g. when using 1 GPU).
 
-Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
-
-[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
-
 ## Inference on Omni3D <a name="inference"></a>
 
 To evaluate trained models from Cube R-CNN's [`MODEL_ZOO.md`](MODEL_ZOO.md), run
@@ -146,6 +142,10 @@ python tools/train_net.py \
   MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
   OUTPUT_DIR output/evaluation
 ```
+
+Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
+
+[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
 
 ### Performance on Test Set
 The evaluation produces two tables which summarize performance on the test set. The first is a performance analysis table and the second is the Omni3D performance table. The latter should be used to compare to Cube R-CNN.
