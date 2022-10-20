@@ -21,8 +21,9 @@ from detectron2.evaluation import (
 )
 from detectron2.solver import build_lr_scheduler
 from detectron2.utils.events import EventStorage
+from detectron2.utils.logger import setup_logger
 
-logger = logging.getLogger("detectron2")
+logger = logging.getLogger("cubercnn")
 
 sys.dont_write_bytecode = True
 sys.path.append(os.getcwd())
@@ -34,7 +35,8 @@ from cubercnn.data import (
     load_omni3d_json,
     DatasetMapper3D,
     build_detection_train_loader,
-    build_detection_test_loader
+    build_detection_test_loader,
+    get_omni3d_categories
 )
 from cubercnn.evaluation import (
     Omni3DEvaluator, OmniEval,
@@ -44,16 +46,20 @@ from cubercnn.modeling.roi_heads import ROIHeads3D
 from cubercnn.modeling.meta_arch import RCNN3D, build_model
 from cubercnn.modeling.backbone import build_dla_from_vision_fpn_backbone
 from cubercnn import util, vis, data
+import cubercnn.vis.logperf as utils_logperf
 
-OMNI3D_OFFICIAL = {'chair', 'table', 'cabinet', 'car', 'lamp', 'books', 'sofa', 'pedestrian', 'picture', 'window', 'pillow', 'truck', 'door', 'blinds', 'sink', 'shelves', 'television', 'shoes', 'cup', 'bottle', 'bookcase', 'laptop', 'desk', 'cereal box', 'floor mat', 'traffic cone', 'mirror', 'barrier', 'counter', 'camera', 'bicycle', 'toilet', 'bus', 'bed', 'refrigerator', 'trailer', 'box', 'oven', 'clothes', 'van', 'towel', 'motorcycle', 'night stand', 'stove', 'machine', 'stationery', 'bathtub', 'cyclist', 'curtain', 'bin'}
-INDOOR_COMMON = {'table', 'bed', 'sofa', 'television', 'bathtub', 'sink', 'shelves', 'cabinet', 'refrigerator', 'chair'}
-OUTDOOR_COMMON = {'truck', 'pedestrian', 'car'}
 
 MAX_TRAINING_ATTEMPTS = 10
+
 
 def do_test(cfg, model, iteration='final', storage=None):
     
     results = OrderedDict()
+
+    # These store store per-dataset results to be printed
+    results_analysis = OrderedDict()
+    results_dataset = OrderedDict()
+    results_omni3d = OrderedDict()
     
     filter_settings = data.get_filter_settings_from_cfg(cfg)    
     filter_settings['visibility_thres'] = cfg.TEST.VISIBILITY_THRES
@@ -63,12 +69,6 @@ def do_test(cfg, model, iteration='final', storage=None):
 
     overall_imgIds = set()
     overall_catIds = set()
-
-    overall_extras_str = '\n--------------------------------------------- Detailed ----------------------------------------------'
-    overall_extras_str += '\n{:20}  {} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}'.format('datasets', 'iter', 'AP_2D', 'AP_3D', 'AP15_3D', 'AP25_3D', 'AP50_3D', 'APn_3D', 'APm_3D', 'APf_3D')
-
-    overall_log_str    = '\n--------------------------------------------- Overview ----------------------------------------------'
-    overall_log_str += '\n{:20}  {} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}'.format('datasets', 'iter', 'AP_2D', 'AP_3D', 'In_2D', 'In_3D', 'Out_2D', 'Out_3D', 'Omni_2D', 'Omni_3D')
     
     # These store the evaluations for each category and area,
     # concatenated from ALL evaluated datasets. Doing so avoids
@@ -79,12 +79,11 @@ def do_test(cfg, model, iteration='final', storage=None):
     datasets_test = cfg.DATASETS.TEST
 
     for dataset_name in datasets_test:
-
-        '''
+        """
         Cycle through each dataset and test them individually.
         This loop keeps track of each per-image evaluation result, 
         so that it doesn't need to be re-computed for the collective.
-        '''
+        """
 
         data_loader = build_detection_test_loader(cfg, dataset_name)
         only_2d=cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_3D == 0.0
@@ -120,39 +119,31 @@ def do_test(cfg, model, iteration='final', storage=None):
 
                 logger.info('\n'+results_i['log_str_3D'].replace('mode=3D', '{} iter={} mode=3D'.format(dataset_name, iteration)))
 
-            categories_in_common = set(cat for cat in cfg.DATASETS.CATEGORY_NAMES if 'AP-{}'.format(cat) in results_i['bbox_2D'])
+            # The set of categories present in the dataset; there should be no duplicates 
+            categories = {cat for cat in cfg.DATASETS.CATEGORY_NAMES if 'AP-{}'.format(cat) in results_i['bbox_2D']}
+            assert len(categories) == len(set(categories)) 
 
-            # default are all NaN, assuming the categories are not available.
-            general_2D, general_3D, outdoor_common_2D, outdoor_common_3D, indoor_common_2D, indoor_common_3D, omni_common_2D, omni_common_3D = (np.nan,)*8
+            # default are all NaN
+            general_2D, general_3D, omni_2D, omni_3D = (np.nan,) * 4
 
-            general_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in categories_in_common])
-
+            # 2D and 3D performance for categories in dataset; and log
+            general_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in categories])
             if not only_2d:
-                general_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in categories_in_common])
+                general_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in categories])
 
-            # valid omni common
-            if len(OMNI3D_OFFICIAL - categories_in_common) == 0:
-                omni_common_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in OMNI3D_OFFICIAL])
-                
-                if not only_2d:
-                    omni_common_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in OMNI3D_OFFICIAL])
+            results_dataset[dataset_name] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D}
 
-            # valid outdoor common
-            if len(OUTDOOR_COMMON - categories_in_common) == 0:
-                outdoor_common_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in OUTDOOR_COMMON])
-                
+            # 2D and 3D performance on Omni3D categories
+            omni3d_dataset_categories = get_omni3d_categories(dataset_name)  # dataset-specific categories
+            if len(omni3d_dataset_categories - categories) == 0:  # omni3d_dataset_categories is a subset of categories
+                omni_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
                 if not only_2d:
-                    outdoor_common_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in OUTDOOR_COMMON])
-                
-            # valid indoor common
-            if len(INDOOR_COMMON - categories_in_common) == 0:
-                indoor_common_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in INDOOR_COMMON])
-                
-                if not only_2d:
-                    indoor_common_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in INDOOR_COMMON])
+                    omni_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
+            
+            results_omni3d[dataset_name] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
 
+            # Performance analysis
             extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,)*6
-
             if not only_2d:
                 extras_AP15 = results_i['bbox_3D']['AP15']
                 extras_AP25 = results_i['bbox_3D']['AP25']
@@ -160,30 +151,25 @@ def do_test(cfg, model, iteration='final', storage=None):
                 extras_APn = results_i['bbox_3D']['APn']
                 extras_APm = results_i['bbox_3D']['APm']
                 extras_APf = results_i['bbox_3D']['APf']
-            
-            overall_extras_str += '\n{:20}  {} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f}'.format(
-                dataset_name, iteration, general_2D, general_3D, extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf
-            )
 
-            overall_log_str += '\n{:20}  {} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f}'.format(
-                dataset_name, iteration, general_2D, general_3D, indoor_common_2D, indoor_common_3D, outdoor_common_2D, outdoor_common_3D, omni_common_2D, omni_common_3D
-            )
+            results_analysis[dataset_name] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D, "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf}
 
-            results_str = '\n---------------------------------------------------------------------------'
-            results_str += '\n{}  {}   {:15} {:>15} {:>15}'.format(dataset_name, 'iter', '', 'AP_2D', 'AP_3D')
+            # Performance per category
+            results_cat = OrderedDict()
             for cat in cfg.DATASETS.CATEGORY_NAMES:
+                cat_2D, cat_3D = (np.nan,) * 2
                 if 'AP-{}'.format(cat) in results_i['bbox_2D']:
-                    results_str += '\n{}  {}   {:15} {:15.4f} {:15.4f}'.format(dataset_name, iteration, cat, results_i['bbox_2D']['AP-{}'.format(cat)], 0 if only_2d else results_i['bbox_3D']['AP-{}'.format(cat)])
-            results_str += '\n---------------------------------------------------------------------------'
-
-            logger.info(results_str)
+                    cat_2D = results_i['bbox_2D']['AP-{}'.format(cat)]
+                    if not only_2d:
+                        cat_3D = results_i['bbox_3D']['AP-{}'.format(cat)]
+                if not np.isnan(cat_2D) or not np.isnan(cat_3D):
+                    results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
+            utils_logperf.print_ap_category_histogram(dataset_name, results_cat)
         
         if comm.is_main_process():
-            
             '''
             Visualize some predictions from the instances. 
             '''
-
             detections = torch.load(os.path.join(output_folder, 'instances_predictions.pth'))
             log_str = vis.visualize_from_instances(
                 detections, data_loader.dataset, dataset_name, 
@@ -191,20 +177,17 @@ def do_test(cfg, model, iteration='final', storage=None):
             )
             logger.info(log_str)
 
-    if comm.is_main_process():
-
-        
+    if comm.is_main_process():        
         '''
         Report collective metrics when possible for the the Omni3D dataset.
         This uses pre-computed evaluation results from each dataset, which were
         aggregated and cached while evaluating them individually. 
         This process simply re-accumulate and summarizes them. 
         '''
-
         thing_classes = MetadataCatalog.get('omni3d_model').thing_classes
         catId2contiguous = MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
         ordered_things = [thing_classes[catId2contiguous[cid]] for cid in overall_catIds]
-        categories_in_common = set(ordered_things)
+        categories = set(ordered_things)
 
         evaluator2D = OmniEval(mode='2D')
         evaluator2D.params.catIds = list(overall_catIds)
@@ -258,46 +241,16 @@ def do_test(cfg, model, iteration='final', storage=None):
             ap = np.mean(precision) if precision.size else float("nan")
             results3D.update({"AP-" + "{}".format(name): float(ap * 100)})
 
-        general_2D, general_3D, outdoor_common_2D, outdoor_common_3D, indoor_common_2D, indoor_common_3D, omni_common_2D, omni_common_3D = (np.nan,)*8
 
-        general_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in categories_in_common])
+        # All concat categories
+        general_2D, general_3D = (np.nan,) * 2
 
+        general_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in categories])
         if not only_2d:
-            general_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in categories_in_common])
+            general_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in categories])
 
-        # valid omni common
-        if len(OMNI3D_OFFICIAL - categories_in_common) == 0:
-            omni_common_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in OMNI3D_OFFICIAL])
-            
-            if not only_2d:
-                omni_common_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in OMNI3D_OFFICIAL])
-
-        # valid outdoor common
-        if len(OUTDOOR_COMMON - categories_in_common) == 0:
-            outdoor_common_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in OUTDOOR_COMMON])
-            
-            if not only_2d:
-                outdoor_common_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in OUTDOOR_COMMON])
-            
-        # valid indoor common
-        if len(INDOOR_COMMON - categories_in_common) == 0:
-            indoor_common_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in INDOOR_COMMON])
-            
-            if not only_2d:
-                indoor_common_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in INDOOR_COMMON])
-
-        dataset_name = '<Concat>'
-        results_str = '\n---------------------------------------------------------------------------'
-        results_str += '\n{}  {}   {:15} {:>15} {:>15}'.format(dataset_name, 'iter', '', 'AP_2D', 'AP_3D')
-        for cat in categories_in_common:
-            if 'AP-{}'.format(cat) in results2D:
-                results_str += '\n{}  {}   {:15} {:15.4f} {:15.4f}'.format(dataset_name, iteration, cat, results2D['AP-{}'.format(cat)], 0 if only_2d else results3D['AP-{}'.format(cat)])
-        results_str += '\n---------------------------------------------------------------------------'
-
-        logger.info(results_str)
-
-        extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,)*6
-
+        # Analysis performance
+        extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,) * 6
         if not only_2d:
             extras_AP15 = results3D['AP15']
             extras_AP25 = results3D['AP25']
@@ -305,17 +258,58 @@ def do_test(cfg, model, iteration='final', storage=None):
             extras_APn = results3D['APn']
             extras_APm = results3D['APm']
             extras_APf = results3D['APf']
-         
-        overall_extras_str += '\n{:20}  {} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f}'.format(
-            dataset_name, iteration, general_2D, general_3D, extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf
-        )
-        overall_extras_str += '\n-----------------------------------------------------------------------------------------------------'
-        overall_log_str += '\n{:20}  {} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f}'.format(
-            dataset_name, iteration, general_2D, general_3D, indoor_common_2D, indoor_common_3D, outdoor_common_2D, outdoor_common_3D, omni_common_2D, omni_common_3D
-        )
-        overall_log_str += '\n-----------------------------------------------------------------------------------------------------'
-        logger.info(overall_extras_str)
-        logger.info(overall_log_str)
+
+        results_analysis["<Concat>"] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D, "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf}
+
+        # Omni3D Outdoor performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_outdoor_categories = get_omni3d_categories("omni3d_out")
+        if len(omni3d_outdoor_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
+            if not only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
+
+        results_omni3d["Omni3D_Out"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Omni3D Indoor performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_indoor_categories = get_omni3d_categories("omni3d_in")
+        if len(omni3d_indoor_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
+            if not only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
+
+        results_omni3d["Omni3D_In"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Omni3D performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_categories = get_omni3d_categories("omni3d")
+        if len(omni3d_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_categories])
+            if not only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_categories])
+
+        results_omni3d["Omni3D"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Per-category performance for the cumulative datasets
+        results_cat = OrderedDict()
+        for cat in cfg.DATASETS.CATEGORY_NAMES:
+            cat_2D, cat_3D = (np.nan,) * 2
+            if 'AP-{}'.format(cat) in results2D:
+                cat_2D = results2D['AP-{}'.format(cat)]
+                if not only_2d:
+                    cat_3D = results3D['AP-{}'.format(cat)]
+            if not np.isnan(cat_2D) or not np.isnan(cat_3D):
+                results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
+        utils_logperf.print_ap_category_histogram("<Concat>", results_cat)
+
+        
+        # utils_logperf.print_ap_dataset_histogram(results_dataset)  # this is redundant -- it is contained in the analysis
+        utils_logperf.print_ap_analysis_histogram(results_analysis)
+        utils_logperf.print_ap_omni_histogram(results_omni3d)
 
 
 def do_train(cfg, model, dataset_id_to_unknown_cats, dataset_id_to_src, resume=False):
@@ -536,6 +530,8 @@ def setup(args):
     cfg.merge_from_list(args.opts)
     cfg.freeze()
     default_setup(cfg, args)
+
+    setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="cubercnn")
     
     filter_settings = data.get_filter_settings_from_cfg(cfg)
 
