@@ -79,7 +79,7 @@ sh demo/download_demo_COCO_images.sh
 
 # Run an example demo
 python demo/demo.py \
---config cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
+--config-file cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
 --input-folder "datasets/coco_examples" \
 --threshold 0.25 --display \
 MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
@@ -138,7 +138,7 @@ To evaluate trained models from Cube R-CNN's [`MODEL_ZOO.md`](MODEL_ZOO.md), run
 
 ```
 python tools/train_net.py \
-  --eval-only --config cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
+  --eval-only --config-file cubercnn://omni3d/cubercnn_DLA34_FPN.yaml \
   MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
   OUTPUT_DIR output/evaluation
 ```
