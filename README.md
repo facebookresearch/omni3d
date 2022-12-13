@@ -213,15 +213,6 @@ If you use the Omni3D benchmark, we kindly ask you to additionally cite all data
 ```
 
 ```BibTex
-@inproceedings{Geiger2012CVPR,
-  author = {Andreas Geiger and Philip Lenz and Raquel Urtasun},
-  title = {Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite},
-  booktitle = {CVPR},
-  year = {2012}
-}
-```
-
-```BibTex
 @inproceedings{caesar2020nuscenes,
   title={nuscenes: A multimodal dataset for autonomous driving},
   author={Caesar, Holger and Bankiti, Varun and Lang, Alex H and Vora, Sourabh and Liong, Venice Erin and Xu, Qiang and Krishnan, Anush and Pan, Yu and Baldan, Giancarlo and Beijbom, Oscar},
