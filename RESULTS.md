@@ -44,6 +44,7 @@ The tables also report performance on the outdoor and indoor subsets of the test
 Below we provide Cube R-CNN performance when trained and evaluated on the indoor (Omni3D_In) and outdoor (Omni3D_Out) splits.
 
 <details><summary>Omni3D_In</summary>
+
 Here we **train and evaluate** Cube R-CNN on the Omni3D_In split which consists of {Hypersim, SUN RGB-D, ARKitScenes}.
 
 1. Performance Analysis Table
@@ -69,6 +70,7 @@ Here we **train and evaluate** Cube R-CNN on the Omni3D_In split which consists 
 </details>
 
 <details><summary>Omni3D_Out</summary>
+
 Here we **train and evaluate** Cube R-CNN on the Omni3D_Out split which consists of {KITTI, nuScenes}.
 
 1. Performance Analysis Table
