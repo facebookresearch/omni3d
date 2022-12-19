@@ -37,10 +37,11 @@
 1. [Installation](#installation)
 2. [Demo](#demo)
 3. [Omni3D Data](#data)
-4. [Training Cube R-CNN](#training)
-5. [Inference & Evaluation](#inference)
-6. [License](#license)
-7. [Citing](#citing)
+4. [Cube R-CNN Training](#training)
+5. [Cube R-CNN Inference](#inference)
+6. [Results](#results)
+7. [License](#license)
+8. [Citing](#citing)
 
 
 ## Installation <a name="installation"></a>
@@ -67,11 +68,11 @@ python -m pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wh
 conda install -c conda-forge scipy seaborn
 ```
 
-We used `cuda/10.1` and `cudnn/v7.6.5.32` for our experiments, but expect that slight variations in versions are also compatible. 
+For reference, we used `cuda/10.1` and `cudnn/v7.6.5.32` for our experiments. We expect that slight variations in versions are also compatible. 
 
 ## Demo <a name="demo"></a>
 
-Run Cube R-CNN on a folder of input images using our DLA34 model trained on the full Omni3D dataset. See our [`MODEL_ZOO.md`](MODEL_ZOO.md) for more model checkpoints. 
+To run the Cube R-CNN demo on a folder of input images using our `DLA34` model trained on the full Omni3D dataset,
 
 ``` bash
 # Download example COCO images
@@ -86,7 +87,7 @@ MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
 OUTPUT_DIR output/demo 
 ```
 
-See [`demo.py`](demo/demo.py) for more details.
+See [`demo.py`](demo/demo.py) for more details. See our [`MODEL_ZOO.md`](MODEL_ZOO.md) for more model checkpoints. 
 
 ## Omni3D Data <a name="data"></a>
 See [`DATA.md`](DATA.md) for instructions on how to download and set up images and annotations of our Omni3D benchmark for training and evaluating Cube R-CNN. 
@@ -94,18 +95,18 @@ See [`DATA.md`](DATA.md) for instructions on how to download and set up images a
 ## Training Cube R-CNN on Omni3D <a name="training"></a>
 
 We provide config files for trainin Cube R-CNN on
-* Omni3D [`configs/Base_Omni3D.yaml`](configs/Base_Omni3D.yaml)
-* Omni3D indoor [`configs/Base_Omni3D_in.yaml`](configs/Base_Omni3D_in.yaml)
-* Omni3D outdoor [`configs/Base_Omni3D_out.yaml`](configs/Base_Omni3D_out.yaml)
+* Omni3D: [`configs/Base_Omni3D.yaml`](configs/Base_Omni3D.yaml)
+* Omni3D indoor: [`configs/Base_Omni3D_in.yaml`](configs/Base_Omni3D_in.yaml)
+* Omni3D outdoor: [`configs/Base_Omni3D_out.yaml`](configs/Base_Omni3D_out.yaml)
 
-We train on 48 GPUs using [submitit](https://github.com/facebookincubator/submitit) which wraps the following training command
+We train on 48 GPUs using [submitit](https://github.com/facebookincubator/submitit) which wraps the following training command,
 ```bash
 python tools/train_net.py \
   --config-file configs/Base_Omni3D.yaml \
   OUTPUT_DIR output/omni3d_example_run
 ```
 
-Note that our provided configs specify hyperparameters tuned for 48 GPUs. You could train on 1 GPU (though with no guarantee of reaching the final performance) as follows
+Note that our provided configs specify hyperparameters tuned for 48 GPUs. You could train on 1 GPU (though with no guarantee of reaching the final performance) as follows,
 ``` bash
 python tools/train_net.py \
   --config-file configs/Base_Omni3D.yaml --num-gpus 1 \
@@ -115,11 +116,11 @@ python tools/train_net.py \
   VIS_PERIOD 111360 OUTPUT_DIR output/omni3d_example_run
 ```
 
-### Tips for tuning hyperparameters <a name="tuning"></a>
+### Tips for Tuning Hyperparameters <a name="tuning"></a>
 
 Our Omni3D configs are designed for multi-node training. 
 
-We follow a simple scaling rule for adjusting to different system configurations. We find that 16GB GPUs (e.g. V100s) can hold 4 images per batch when training with a DLA34 backbone. If $g$ is the number of GPUs, then the number of images per batch is $b = 4g$. Let's define $r$ to be the ratio between the recommended batch size $b_0$ and the actual batch size $b$, namely $r = b_0 / b$. The values for $b_0$ can be found in the configs. For instance, for the full Omni3D training $b_0 = 196$ as shown [here](https://github.com/fairinternal/cubercnn/blob/main/configs/Base_Omni3D.yaml#L4).
+We follow a simple scaling rule for adjusting to different system configurations. We find that 16GB GPUs (e.g. V100s) can hold 4 images per batch when training with a `DLA34` backbone. If $g$ is the number of GPUs, then the number of images per batch is $b = 4g$. Let's define $r$ to be the ratio between the recommended batch size $b_0$ and the actual batch size $b$, namely $r = b_0 / b$. The values for $b_0$ can be found in the configs. For instance, for the full Omni3D training $b_0 = 196$ as shown [here](https://github.com/facebookresearch/omni3d/blob/main/configs/Base_Omni3D.yaml#L4).
 We scale the following hyperparameters as follows:
 
   * `SOLVER.IMS_PER_BATCH` $=b$
@@ -147,44 +148,12 @@ Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3
 
 [Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
 
-### Performance on Test Set
-The evaluation produces two tables which summarize performance on the test set. The first is a performance analysis table and the second is the Omni3D performance table. The latter should be used to compare to Cube R-CNN.
+## Results <a name="results"></a>
 
-For the `DLA34` Cube R-CNN model trained on the full Omni3D, the tables are:
-
-1. Performance Analysis Table
-
-
-|     Dataset      |  #iters  | AP2D    | AP3D    | AP3D@15   | AP3D@25   | AP3D@50   | AP3D-N    | AP3D-M   | AP3D-F   |
-|------------------|----------|---------|---------|-----------|-----------|-----------|-----------|----------|----------|
-|   SUNRGBD_test   |  final   | 15.6662 | 15.4155 | 21.7293   | 17.0427   | 5.22497   | 15.4156   | nan      | nan      |
-|  Hypersim_test   |  final   | 12.2447 | 7.48912 | 10.05     | 7.59755   | 2.27113   | 7.96361   | 0.586047 | 0        |
-| ARKitScenes_test |  final   | 41.3007 | 42.0249 | 53.3787   | 45.8009   | 19.5674   | 42.0256   | 0        | nan      |
-|  Objectron_test  |  final   | 56.4603 | 53.8335 | 68.4659   | 57.6667   | 25.5449   | 53.8335   | nan      | nan      |
-|    KITTI_test    |  final   | 41.3125 | 32.7199 | 42.0242   | 34.6804   | 16.3361   | 56.8205   | 36.2016  | 16.6963  |
-|  nuScenes_test   |  final   | 36.31   | 30.1744 | 39.3073   | 32.3152   | 14.6941   | 47.7772   | 34.9152  | 11.9943  |
-|     **Concat**   |  final   | 27.6029 | 23.8362 | 31.3713   | 25.5598   | 10.1012   | 28.5417   | 12.0974  | 8.56238  |
-
-2. Omni3D Performance Table -- To be used to compare with Cube R-CNN
-
-|     Dataset      |  #iters  | AP2D    | AP3D    |
-|------------------|----------|---------|---------|
-|   SUNRGBD_test   |  final   | 15.6662 | 15.4155 |
-|  Hypersim_test   |  final   | 12.2447 | 7.48912 |
-| ARKitScenes_test |  final   | 41.3007 | 42.0249 |
-|  Objectron_test  |  final   | 56.4603 | 53.8335 |
-|    KITTI_test    |  final   | 41.3125 | 32.7199 |
-|  nuScenes_test   |  final   | 36.31   | 30.1744 |
-|    Omni3D_Out    |  final   | 38.8662 | 33.0987 |
-|    Omni3D_In     |  final   | 23.3653 | 20.589  |
-|    **Omni3D**    |  final   | 27.6029 | 23.8362 |
-
-The Omni3D entry (last row) gives performance on the *full Omni3D test set* and is what we report in our paper.
-The Omni3D_Out and Omni3D_In entries show perfomance on the outdoor and indoor subsets of the test set, respectively. 
-
+See [`RESULTS.md`](RESULTS.md) for detailed Cube R-CNN performance and comparison with other methods.
 
 ## License <a name="license"></a>
-Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE.md)
+Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE.md).
 
 ## Citing <a name="citing"></a>
 
@@ -199,7 +168,7 @@ Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in you
 }
 ```
 
-If you use the Omni3D benchmark, we kindly ask you to additionally cite all datasets. BibTex entries are provided below
+If you use the Omni3D benchmark, we kindly ask you to additionally cite all datasets. BibTex entries are provided below.
 
 <details><summary>Dataset BibTex</summary>
 
@@ -210,16 +179,7 @@ If you use the Omni3D benchmark, we kindly ask you to additionally cite all data
   booktitle = {CVPR},
   year = {2012}
 }
-```
-
-```BibTex
-@inproceedings{Geiger2012CVPR,
-  author = {Andreas Geiger and Philip Lenz and Raquel Urtasun},
-  title = {Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite},
-  booktitle = {CVPR},
-  year = {2012}
-}
-```
+``` 
 
 ```BibTex
 @inproceedings{caesar2020nuscenes,
