@@ -291,6 +291,9 @@ def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_f
 
                 if clipz is not None:
                     verts3D[:, -1] = verts3D[:, -1].clip(clipz)
+
+                if (verts3D[..., -1] <= 0).any():
+                    print('Warning: Some vertices appear behind the image plane. Our visualization code does not handle this case yet so some boxes might be displayed wrongly. We are working on a fix')
                 
                 verts2D = (K @ verts3D.T) / verts3D[:, -1]
 
