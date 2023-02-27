@@ -55,8 +55,8 @@ def draw_bev(canvas_bev, z3d, l3d, w3d, x3d, ry3d, color=(0, 200, 200), scale=1,
     draw_line(canvas_bev, corners2[3], corners2[0], color=color, thickness=thickness)
 
 
-def draw_line(im, v1, v2, color=(0, 200, 200), thickness=1):
-    cv2.line(im, (int(v1[0]), int(v1[1])), (int(v2[0]), int(v2[1])), color, thickness)
+def draw_line(im, v0, v1, color=(0, 200, 200), thickness=1):
+    cv2.line(im, (int(v0[0]), int(v0[1])), (int(v1[0]), int(v1[1])), color, thickness)
 
 
 def create_colorbar(height, width, color_lo=(0,0, 250), color_hi=(0, 250, 250)):
@@ -207,7 +207,7 @@ def imshow(im, fig_num=None):
     plt.show()
 
 
-def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_factor=1.0, mode='front_and_novel', blend_weight=0.80, blend_weight_overlay=1.0, ground_bounds=None, canvas=None, clipz=None):
+def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_factor=1.0, mode='front_and_novel', blend_weight=0.80, blend_weight_overlay=1.0, ground_bounds=None, canvas=None, zplane=0.05):
     """
     Draws a scene from multiple different modes. 
     Args:
@@ -223,10 +223,11 @@ def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_f
             front implies the front-facing camera view and novel is based on R,T
         blend_weight (float): blend factor for box edges over the RGB
         blend_weight_overlay (float): blends the RGB image with the rendered meshes
-        ground_bounds: max_y3d, x3d_start, x3d_end, z3d_start, z3d_end for the Ground floor or 
+        ground_bounds (tuple): max_y3d, x3d_start, x3d_end, z3d_start, z3d_end for the Ground floor or 
             None to let the renderer to estimate the ground bounds in the novel view itself.
-        canvas: if the canvas doesn't change it can be faster to re-use it. Optional.
-        clipz: clips all vertices to this depth is < clipz.
+        canvas (array): if the canvas doesn't change it can be faster to re-use it. Optional.
+        zplane (float): a plane of depth to solve intersection when
+            vertex points project behind the camera plane. 
     """
     if R is None:
         R = util.euler2mat([np.pi/3, 0, 0])
@@ -288,18 +289,15 @@ def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_f
                 mesh = meshes[mesh_idx]
 
                 verts3D = mesh.verts_padded()[0].cpu().numpy()
-
-                if clipz is not None:
-                    verts3D[:, -1] = verts3D[:, -1].clip(clipz)
-
-                if (verts3D[..., -1] <= 0).any():
-                    print('Warning: Some vertices appear behind the image plane. Our visualization code does not handle this case yet so some boxes might be displayed wrongly. We are working on a fix')
-                
                 verts2D = (K @ verts3D.T) / verts3D[:, -1]
 
                 color = [min(255, c*255*1.25) for c in mesh.textures.verts_features_padded()[0,0].tolist()]
 
-                draw_3d_box_from_verts(im_drawn_rgb, verts2D.T, color=color, thickness=max(2, int(np.round(3*im_drawn_rgb.shape[0]/1250))), draw_back=False, draw_top=False)
+                draw_3d_box_from_verts(
+                    im_drawn_rgb, K, verts3D, color=color, 
+                    thickness=max(2, int(np.round(3*im_drawn_rgb.shape[0]/1250))), 
+                    draw_back=False, draw_top=False, zplane=zplane
+                )
 
                 x1 = verts2D[0, :].min() #min(verts2D[0, (verts2D[0, :] > 0) & (verts2D[0, :] < im_drawn_rgb.shape[1])])
                 y1 = verts2D[1, :].min() #min(verts2D[1, (verts2D[1, :] > 0) & (verts2D[1, :] < im_drawn_rgb.shape[0])])
@@ -518,7 +516,11 @@ def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_f
 
                 color = [min(255, c*255*1.25) for c in mesh.textures.verts_features_padded()[0,0].tolist()]
 
-                draw_3d_box_from_verts(im_novel_view, verts2D.T, color=color, thickness=max(2, int(np.round(3*im_novel_view.shape[0]/1250))), draw_back=False, draw_top=False)
+                draw_3d_box_from_verts(
+                    im_novel_view, K_novelview, verts3D, color=color, 
+                    thickness=max(2, int(np.round(3*im_novel_view.shape[0]/1250))), 
+                    draw_back=False, draw_top=False, zplane=zplane
+                )
                 
                 x1 = verts2D[0, :].min() 
                 y1 = verts2D[1, :].min() 
@@ -565,33 +567,81 @@ def draw_transparent_polygon(im, verts, blend=0.5, color=(0, 255, 255)):
     im[mask, 2] = im[mask, 2] * blend + (1 - blend) * color[2]
 
 
-def draw_3d_box_from_verts(im, verts, color=(0, 200, 200), thickness=1, draw_back=True, draw_top=False):
+def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, draw_back=False, draw_top=False, zplane=0.05):
+    """
+    Draws a scene from multiple different modes. 
+    Args:
+        im (array): the image to draw onto
+        K (array): the 3x3 matrix for projection to camera to screen
+        verts3d (array): the 8x3 matrix of vertices in camera space
+        color (tuple): color in RGB scaled [0, 255)
+        thickness (float): the line thickness for opencv lines
+        draw_back (bool): whether a backface should be highlighted
+        draw_top (bool): whether the top face should be highlighted
+        zplane (float): a plane of depth to solve intersection when
+            vertex points project behind the camera plane. 
+    """
 
     # reorder
     bb3d_lines_verts = [[0, 1], [1, 2], [2, 3], [3, 0], [1, 5], [5, 6], [6, 2], [4, 5], [4, 7], [6, 7], [0, 4], [3, 7]]
-
+    
+    # define back and top vetice planes
+    back_idxs = [4, 0, 3, 7]
+    top_idxs = [4, 0, 1, 5]
+    
     for (i, j) in bb3d_lines_verts:
-        v1 = verts[i]
-        v2 = verts[j]
+        v0 = verts3d[i]
+        v1 = verts3d[j]
 
-        cv2.line(im, (int(v1[0]), int(v1[1])), (int(v2[0]), int(v2[1])), color, thickness)
+        z0, z1 = v0[-1], v1[-1]
 
-    if type(verts) == torch.Tensor:
-        verts_np = verts.detach().cpu().numpy()
-    else:
-        verts_np = verts
+        if (z0 >= zplane or z1 >= zplane) and (z1 != z0):
+            
+            # computer intersection of v0, v1 and zplane
+            s = (zplane - z0) / (z1 - z0)
+            new_v = v0 + s * (v1 - v0)
 
-    if draw_back:
-        draw_transparent_polygon(im, verts_np[[4, 0, 3, 7], :2], blend=0.5, color=color)
+            if (z0 < zplane) and (z1 >= zplane):
+                # i0 vertex is behind the plane
+                v0 = new_v
+            elif (z0 >= zplane) and (z1 < zplane):
+                # i1 vertex is behind the plane
+                v1 = new_v
 
-    if draw_top:
-        draw_transparent_polygon(im, verts_np[[4, 0, 1, 5], :2], blend=0.5, color=color)
+            v0_proj = (K @ v0)/v0[-1]
+            v1_proj = (K @ v1)/v1[-1]
+
+            # project vertices
+            cv2.line(im, 
+                (int(v0_proj[0]), int(v0_proj[1])), 
+                (int(v1_proj[0]), int(v1_proj[1])), 
+                color, thickness
+            )
+
+    # dont draw  the planes if a vertex is out of bounds
+    draw_back &= np.all(verts3d[back_idxs, -1] >= zplane)
+    draw_top &= np.all(verts3d[top_idxs, -1] >= zplane)
+
+    if draw_back or draw_top:
+        
+        # project to image
+        verts2d = (K @ verts3d.T).T
+        verts2d /= verts2d[:, -1][:, np.newaxis]
+        
+        if type(verts2d) == torch.Tensor:
+            verts2d = verts2d.detach().cpu().numpy()
+
+        if draw_back:
+            draw_transparent_polygon(im, verts2d[back_idxs, :2], blend=0.5, color=color)
+
+        if draw_top:
+            draw_transparent_polygon(im, verts2d[top_idxs, :2], blend=0.5, color=color)
     
 
-def draw_3d_box(im, K, box3d, R, color=(0, 200, 200), thickness=1, draw_back=True, draw_top=False, view_R=None, view_T=None):
+def draw_3d_box(im, K, box3d, R, color=(0, 200, 200), thickness=1, draw_back=False, draw_top=False, view_R=None, view_T=None):
 
     verts2d, verts3d = util.get_cuboid_verts(K, box3d, R, view_R=view_R, view_T=view_T)
-    draw_3d_box_from_verts(im, verts2d, color=color, thickness=thickness, draw_back=draw_back, draw_top=draw_top)
+    draw_3d_box_from_verts(im, K, verts3d, color=color, thickness=thickness, draw_back=draw_back, draw_top=draw_top)
 
 def draw_text(im, text, pos, scale=0.4, color='auto', font=cv2.FONT_HERSHEY_SIMPLEX, bg_color=(0, 255, 255),
               blend=0.33, lineType=1):

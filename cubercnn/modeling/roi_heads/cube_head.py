@@ -139,7 +139,7 @@ class CubeHead(nn.Module):
 
         # Optionally, box confidence
         if self.use_conf:
-            self.bbox_3D_uncertainty = nn.Linear(self._output_size, cluster_bins*self.num_classes*1)
+            self.bbox_3D_uncertainty = nn.Linear(self._output_size, self.num_classes*1)
             nn.init.normal_(self.bbox_3D_uncertainty.weight, std=0.001)
             nn.init.constant_(self.bbox_3D_uncertainty.bias, 5)
 

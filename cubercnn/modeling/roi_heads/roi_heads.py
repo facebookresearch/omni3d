@@ -216,9 +216,10 @@ class ROIHeads3D(StandardROIHeads):
 
             losses = self._forward_box(features, proposals)
             if self.loss_w_3d > 0:
-                losses.update(self._forward_cube(features, proposals, Ks, im_dims, im_scales_ratio))
+                instances_3d, losses_cube = self._forward_cube(features, proposals, Ks, im_dims, im_scales_ratio)
+                losses.update(losses_cube)
 
-            return [], losses
+            return instances_3d, losses
         
         else:
 
@@ -361,7 +362,7 @@ class ROIHeads3D(StandardROIHeads):
         
         # nothing to do..
         if n == 0:
-            return instances
+            return instances if not self.training else (instances, {})
 
         num_boxes_per_image = [len(i) for i in proposals]
 
@@ -532,7 +533,7 @@ class ROIHeads3D(StandardROIHeads):
 
             # project GT corners
             gt_proj_boxes = torch.bmm(Ks_scaled_per_box, gt_corners.transpose(1,2))
-            gt_proj_boxes /= gt_proj_boxes[:, -1, :].unsqueeze(1)
+            gt_proj_boxes /= gt_proj_boxes[:, -1, :].clone().unsqueeze(1)
 
             gt_proj_x1 = gt_proj_boxes[:, 0, :].min(1)[0]
             gt_proj_y1 = gt_proj_boxes[:, 1, :].min(1)[0]
@@ -724,9 +725,10 @@ class ROIHeads3D(StandardROIHeads):
             # store per batch loss stats temporarily
             self.batch_losses = [batch_losses.mean().item() for batch_losses in total_3D_loss_for_reporting.split(num_boxes_per_image)]
             
-            losses.update({
-                prefix + 'loss_dims': self.safely_reduce_losses(loss_dims) * self.loss_w_dims * self.loss_w_3d,
-            })
+            if self.loss_w_dims > 0:
+                losses.update({
+                    prefix + 'loss_dims': self.safely_reduce_losses(loss_dims) * self.loss_w_dims * self.loss_w_3d,
+                })
 
             if not cube_2d_deltas is None:
                 losses.update({
@@ -748,38 +750,61 @@ class ROIHeads3D(StandardROIHeads):
                 if valid_joint.any():
                     losses.update({prefix + 'loss_joint': self.safely_reduce_losses(loss_joint[valid_joint]) * self.loss_w_joint * self.loss_w_3d})
 
-            return losses
+            
+        '''
+        Inference
+        '''
+        if len(cube_z.shape) == 0:
+            cube_z = cube_z.unsqueeze(0)
 
-        else:
-            '''
-            Inference
-            '''
-            if len(cube_z.shape) == 0:
-                cube_z = cube_z.unsqueeze(0)
+        # inference
+        cube_x3d = cube_z * (cube_x - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
+        cube_y3d = cube_z * (cube_y - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
+        cube_3D = torch.cat((torch.stack((cube_x3d, cube_y3d, cube_z)).T, cube_dims, cube_xy*im_ratios_per_box.unsqueeze(1)), dim=1)
 
-            # inference
-            cube_x3d = cube_z * (cube_x - Ks_scaled_per_box[:, 0, 2])/Ks_scaled_per_box[:, 0, 0]
-            cube_y3d = cube_z * (cube_y - Ks_scaled_per_box[:, 1, 2])/Ks_scaled_per_box[:, 1, 1]
-            cube_3D = torch.cat((torch.stack((cube_x3d, cube_y3d, cube_z)).T, cube_dims, cube_xy*im_ratios_per_box.unsqueeze(1)), dim=1)
+        if self.use_confidence:
+            cube_conf = torch.exp(-cube_uncert)
+            cube_3D = torch.cat((cube_3D, cube_conf.unsqueeze(1)), dim=1)
 
-            if self.use_confidence:
-                cube_conf = torch.exp(-cube_uncert)
-                cube_3D = torch.cat((cube_3D, cube_conf.unsqueeze(1)), dim=1)
+        # convert the predictions to intances per image
+        cube_3D = cube_3D.split(num_boxes_per_image)
+        cube_pose = cube_pose.split(num_boxes_per_image)
+        box_classes = box_classes.split(num_boxes_per_image)
+        
+        pred_instances = None
+        
+        pred_instances = instances if not self.training else \
+            [Instances(image_size) for image_size in im_current_dims]
 
-            # convert the predictions to intances per image
-            cube_3D = cube_3D.split(num_boxes_per_image)
-            cube_pose = cube_pose.split(num_boxes_per_image)
-
-            for cube_3D_i, cube_pose_i, instances_i, K, im_dim, im_scale_ratio in zip(cube_3D, cube_pose, instances, Ks, im_current_dims, im_scales_ratio):
-                
+        for cube_3D_i, cube_pose_i, instances_i, K, im_dim, im_scale_ratio, box_classes_i, pred_boxes_i in \
+            zip(cube_3D, cube_pose, pred_instances, Ks, im_current_dims, im_scales_ratio, box_classes, pred_boxes):
+            
+            # merge scores if they already exist
+            if hasattr(instances_i, 'scores'):
                 instances_i.scores = (instances_i.scores * cube_3D_i[:, -1])**(1/2)
-                instances_i.pred_bbox3D = util.get_cuboid_verts_faces(cube_3D_i[:, :6], cube_pose_i)[0]
-                instances_i.pred_center_cam = cube_3D_i[:, :3]
-                instances_i.pred_center_2D = cube_3D_i[:, 6:8]
-                instances_i.pred_dimensions = cube_3D_i[:, 3:6]
-                instances_i.pred_pose = cube_pose_i
-                
-            return instances
+            
+            # assign scores if none are present
+            else:
+                instances_i.scores = cube_3D_i[:, -1]
+            
+            # assign box classes if none exist
+            if not hasattr(instances_i, 'pred_classes'):
+                instances_i.pred_classes = box_classes_i
+
+            # assign predicted boxes if none exist    
+            if not hasattr(instances_i, 'pred_boxes'):
+                instances_i.pred_boxes = pred_boxes_i
+
+            instances_i.pred_bbox3D = util.get_cuboid_verts_faces(cube_3D_i[:, :6], cube_pose_i)[0]
+            instances_i.pred_center_cam = cube_3D_i[:, :3]
+            instances_i.pred_center_2D = cube_3D_i[:, 6:8]
+            instances_i.pred_dimensions = cube_3D_i[:, 3:6]
+            instances_i.pred_pose = cube_pose_i
+
+        if self.training:
+            return pred_instances, losses
+        else:
+            return pred_instances
 
     def _sample_proposals(
         self, matched_idxs: torch.Tensor, matched_labels: torch.Tensor, gt_classes: torch.Tensor, matched_ious=None

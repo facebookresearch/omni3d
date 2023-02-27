@@ -30,7 +30,9 @@ def do_test(args, cfg, model):
     list_of_ims = util.list_files(os.path.join(args.input_folder, ''), '*')
 
     model.eval()
-
+    
+    focal_length = args.focal_length
+    principal_point = args.principal_point
     thres = args.threshold
 
     output_dir = cfg.OUTPUT_DIR
@@ -60,12 +62,19 @@ def do_test(args, cfg, model):
         image_shape = im.shape[:2]  # h, w
 
         h, w = image_shape
-        f_ndc = 4
-        f = f_ndc * h / 2
+        
+        if focal_length == 0:
+            focal_length_ndc = 4.0
+            focal_length = focal_length_ndc * h / 2
+
+        if len(principal_point) == 0:
+            px, py = w/2, h/2
+        else:
+            px, py = principal_point
 
         K = np.array([
-            [f, 0.0, w/2], 
-            [0.0, f, h/2], 
+            [focal_length, 0.0, px], 
+            [0.0, focal_length, py], 
             [0.0, 0.0, 1.0]
         ])
 
@@ -154,6 +163,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
     parser.add_argument('--input-folder',  type=str, help='list of image folders to process', required=True)
+    parser.add_argument("--focal-length", type=float, default=0, help="focal length for image inputs (in px)")
+    parser.add_argument("--principal-point", type=float, default=[], nargs=2, help="principal point for image inputs (in px)")
     parser.add_argument("--threshold", type=float, default=0.25, help="threshold on score for visualizing")
     parser.add_argument("--display", default=False, action="store_true", help="Whether to show the images in matplotlib",)
     

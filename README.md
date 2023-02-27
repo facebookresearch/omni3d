@@ -57,7 +57,7 @@ conda create -n cubercnn python=3.8
 source activate cubercnn
 
 # main dependencies
-conda install -c fvcore -c iopath -c conda-forge -c pytorch3d-nightly -c pytorch fvcore iopath pytorch3d pytorch=1.8 torchvision cudatoolkit=10.1
+conda install -c fvcore -c iopath -c conda-forge -c pytorch3d -c pytorch fvcore iopath pytorch3d pytorch=1.8 torchvision=0.9.1 cudatoolkit=10.1
 
 # OpenCV, COCO, detectron2
 pip install cython opencv-python
@@ -87,7 +87,7 @@ MODEL.WEIGHTS cubercnn://omni3d/cubercnn_DLA34_FPN.pth \
 OUTPUT_DIR output/demo 
 ```
 
-See [`demo.py`](demo/demo.py) for more details. See our [`MODEL_ZOO.md`](MODEL_ZOO.md) for more model checkpoints. 
+See [`demo.py`](demo/demo.py) for more details. For example, if you know the camera intrinsics you may input them as arguments with the convention `--focal-length <float>` and `--principal-point <float> <float>`. See our [`MODEL_ZOO.md`](MODEL_ZOO.md) for more model checkpoints. 
 
 ## Omni3D Data <a name="data"></a>
 See [`DATA.md`](DATA.md) for instructions on how to download and set up images and annotations of our Omni3D benchmark for training and evaluating Cube R-CNN. 
@@ -110,7 +110,7 @@ Note that our provided configs specify hyperparameters tuned for 48 GPUs. You co
 ``` bash
 python tools/train_net.py \
   --config-file configs/Base_Omni3D.yaml --num-gpus 1 \
-  SOLVER.IMS_PER_BATCH 4 SOLVER.BASE_LR 0.000625 \
+  SOLVER.IMS_PER_BATCH 4 SOLVER.BASE_LR 0.0025 \
   SOLVER.MAX_ITER 5568000 SOLVER.STEPS (3340800, 4454400) \
   SOLVER.WARMUP_ITERS 174000 TEST.EVAL_PERIOD 1392000 \
   VIS_PERIOD 111360 OUTPUT_DIR output/omni3d_example_run
