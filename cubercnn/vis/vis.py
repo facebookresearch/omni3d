@@ -567,7 +567,7 @@ def draw_transparent_polygon(im, verts, blend=0.5, color=(0, 255, 255)):
     im[mask, 2] = im[mask, 2] * blend + (1 - blend) * color[2]
 
 
-def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, draw_back=False, draw_top=False, zplane=0.05):
+def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, draw_back=False, draw_top=False, zplane=0.05, eps=1e-4):
     """
     Draws a scene from multiple different modes. 
     Args:
@@ -581,6 +581,12 @@ def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, dra
         zplane (float): a plane of depth to solve intersection when
             vertex points project behind the camera plane. 
     """
+
+    if isinstance(K, torch.Tensor):
+        K = K.detach().cpu().numpy()
+
+    if isinstance(verts3d, torch.Tensor):
+        verts3d = verts3d.detach().cpu().numpy()
 
     # reorder
     bb3d_lines_verts = [[0, 1], [1, 2], [2, 3], [3, 0], [1, 5], [5, 6], [6, 2], [4, 5], [4, 7], [6, 7], [0, 4], [3, 7]]
@@ -598,7 +604,7 @@ def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, dra
         if (z0 >= zplane or z1 >= zplane) and (z1 != z0):
             
             # computer intersection of v0, v1 and zplane
-            s = (zplane - z0) / (z1 - z0)
+            s = (zplane - z0) / max((z1 - z0), eps)
             new_v = v0 + s * (v1 - v0)
 
             if (z0 < zplane) and (z1 >= zplane):
@@ -608,8 +614,8 @@ def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, dra
                 # i1 vertex is behind the plane
                 v1 = new_v
 
-            v0_proj = (K @ v0)/v0[-1]
-            v1_proj = (K @ v1)/v1[-1]
+            v0_proj = (K @ v0)/max(v0[-1], eps)
+            v1_proj = (K @ v1)/max(v1[-1], eps)
 
             # project vertices
             cv2.line(im, 
