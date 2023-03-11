@@ -68,7 +68,7 @@ class RCNN3D(GeneralizedRCNN):
 
         if self.vis_period > 0:
             storage = get_event_storage()
-            if storage.iter % self.vis_period == 0:
+            if storage.iter % self.vis_period == 0 and storage.iter > 0:
                 self.visualize_training(batched_inputs, proposals, instances)
 
         losses = {}

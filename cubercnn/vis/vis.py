@@ -601,7 +601,7 @@ def draw_3d_box_from_verts(im, K, verts3d, color=(0, 200, 200), thickness=1, dra
 
         z0, z1 = v0[-1], v1[-1]
 
-        if (z0 >= zplane or z1 >= zplane) and (z1 != z0):
+        if (z0 >= zplane or z1 >= zplane):
             
             # computer intersection of v0, v1 and zplane
             s = (zplane - z0) / max((z1 - z0), eps)
