@@ -4,7 +4,7 @@
 
 **Omni3D: A Large Benchmark and Model for 3D Object Detection in the Wild**
 
-[Garrick Brazil][gb], [Julian Straub][js], [Nikhila Ravi][nr], [Justin Johnson][jj], [Georgia Gkioxari][gg]
+[Garrick Brazil][gb], [Abhinav Kumar][ak], [Julian Straub][js], [Nikhila Ravi][nr], [Justin Johnson][jj], [Georgia Gkioxari][gg]
 
 [[`Project Page`](https://garrickbrazil.com/omni3d)] [[`arXiv`](https://arxiv.org/abs/2207.10660)] [[`BibTeX`](#citing)]
 
@@ -160,11 +160,14 @@ Cube R-CNN is released under [CC-BY-NC 4.0](LICENSE.md).
 Please use the following BibTeX entry if you use Omni3D and/or Cube R-CNN in your research or refer to our results.
 
 ```BibTeX
-@article{brazil2022omni3d,
-  author =       {Garrick Brazil and Julian Straub and Nikhila Ravi and Justin Johnson and Georgia Gkioxari},
+@inproceedings{brazil2023omni3d,
+  author =       {Garrick Brazil and Abhinav Kumar and Julian Straub and Nikhila Ravi and Justin Johnson and Georgia Gkioxari},
   title =        {{Omni3D}: A Large Benchmark and Model for {3D} Object Detection in the Wild},
-  journal =      {arXiv:2207.10660},
-  year =         {2022}
+  booktitle =    {CVPR},
+  address =      {Vancouver, Canada},
+  month =        {June},
+  year =         {2023},
+  organization = {IEEE},
 }
 ```
 
@@ -232,6 +235,7 @@ If you use the Omni3D benchmark, we kindly ask you to additionally cite all data
 [gg]: https://github.com/gkioxari
 [jj]: https://github.com/jcjohnson
 [gb]: https://github.com/garrickbrazil
+[ak]: https://github.com/abhi1kumar
 [nr]: https://github.com/nikhilaravi
 [js]: https://github.com/jstraub
 [d2]: https://github.com/facebookresearch/detectron2
