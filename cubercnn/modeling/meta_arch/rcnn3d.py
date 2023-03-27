@@ -232,8 +232,8 @@ class RCNN3D(GeneralizedRCNN):
             pred_meshes = [pred_meshes.__getitem__(i).detach() for i in range(len(pred_meshes))]
             gt_meshes = [gt_meshes.__getitem__(i) for i in range(len(gt_meshes))]
 
-            img_3DPR = vis.draw_scene_view(img_3DPR, K_scaled.cpu().numpy(), pred_meshes, text=pred_class_names, mode='front', blend_weight=0.5, blend_weight_overlay=0.85)
-            img_3DGT = vis.draw_scene_view(img_3DGT, K_scaled.cpu().numpy(), gt_meshes, text=gt_class_names, mode='front', blend_weight=0.5, blend_weight_overlay=0.85)
+            img_3DPR = vis.draw_scene_view(img_3DPR, K_scaled.cpu().numpy(), pred_meshes, text=pred_class_names, mode='front', blend_weight=0.0, blend_weight_overlay=0.85)
+            img_3DGT = vis.draw_scene_view(img_3DGT, K_scaled.cpu().numpy(), gt_meshes, text=gt_class_names, mode='front', blend_weight=0.0, blend_weight_overlay=0.85)
 
             # horizontal stack 3D GT and pred left/right
             vis_img_3d = np.concatenate((img_3DGT, img_3DPR), axis=1)

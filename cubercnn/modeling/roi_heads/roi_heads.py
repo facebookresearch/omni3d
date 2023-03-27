@@ -460,7 +460,7 @@ class ROIHeads3D(StandardROIHeads):
         cube_xy = torch.cat((cube_x.unsqueeze(1), cube_y.unsqueeze(1)), dim=1)
 
         cube_dims_norm = cube_dims
-        cube_dims = torch.exp(cube_dims_norm)
+        cube_dims = torch.exp(cube_dims_norm.clip(max=5))
 
         if self.dims_priors_enabled:
 

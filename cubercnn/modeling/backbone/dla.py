@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import torch.nn.functional as F
+import detectron2.utils.comm as comm
 
 from detectron2.layers import ShapeSpec
 from detectron2.modeling.backbone import Backbone
@@ -297,15 +298,15 @@ class DLA(nn.Module):
 
 
     def load_pretrained_model(self, data='imagenet', name='dla34', hash='ba72cf86'):
-        if name.endswith('.pth'):
-            model_weights = torch.load(data + name)
-        else:
+        
+        # load model only on main process
+        # to prevent redundent model caching
+        if comm.is_main_process():
             model_url = get_model_url(data, name, hash)
             model_weights = model_zoo.load_url(model_url)
-        
-        del model_weights['fc.weight']
-        del model_weights['fc.bias']
-        self.load_state_dict(model_weights)
+            del model_weights['fc.weight']
+            del model_weights['fc.bias']
+            self.load_state_dict(model_weights)
 
 
 def dla34(pretrained=False, tricks=False, **kwargs):  # DLA-34
@@ -414,38 +415,38 @@ def dla169(pretrained=False, **kwargs):  # DLA-169
     return model
 
 class DLABackbone(Backbone):
-    def __init__(self, cfg, input_shape):
+    def __init__(self, cfg, input_shape, pretrained=True):
         super().__init__()
 
         if cfg.MODEL.DLA.TYPE == 'dla34':
-            base  = dla34(pretrained=True, tricks=cfg.MODEL.DLA.TRICKS)
+            base  = dla34(pretrained=pretrained, tricks=cfg.MODEL.DLA.TRICKS)
             self._out_feature_channels = {'p2': 64, 'p3': 128, 'p4': 256, 'p5': 512, 'p6': 512}
         elif cfg.MODEL.DLA.TYPE == 'dla46_c':
-            base  = dla46_c(pretrained=True)
+            base  = dla46_c(pretrained=pretrained)
             self._out_feature_channels = {'p2': 64, 'p3': 64, 'p4': 128, 'p5': 256, 'p6': 256}
         elif cfg.MODEL.DLA.TYPE == 'dla46x_c':
-            base  = dla46x_c(pretrained=True)
+            base  = dla46x_c(pretrained=pretrained)
             self._out_feature_channels = {'p2': 64, 'p3': 64, 'p4': 128, 'p5': 256, 'p6': 256}
         elif cfg.MODEL.DLA.TYPE == 'dla60x_c':
-            base  = dla60x_c(pretrained=True)
+            base  = dla60x_c(pretrained=pretrained)
             self._out_feature_channels = {'p2': 64, 'p3': 64, 'p4': 128, 'p5': 256, 'p6': 256}
         elif cfg.MODEL.DLA.TYPE == 'dla60':
-            base  = dla60(pretrained=True, tricks=cfg.MODEL.DLA.TRICKS)
+            base  = dla60(pretrained=pretrained, tricks=cfg.MODEL.DLA.TRICKS)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
         elif cfg.MODEL.DLA.TYPE == 'dla60x':
-            base  = dla60x(pretrained=True)
+            base  = dla60x(pretrained=pretrained)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
         elif cfg.MODEL.DLA.TYPE == 'dla102':
-            base  = dla102(pretrained=True, tricks=cfg.MODEL.DLA.TRICKS)
+            base  = dla102(pretrained=pretrained, tricks=cfg.MODEL.DLA.TRICKS)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
         elif cfg.MODEL.DLA.TYPE == 'dla102x':
-            base  = dla102x(pretrained=True)
+            base  = dla102x(pretrained=pretrained)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
         elif cfg.MODEL.DLA.TYPE == 'dla102x2':
-            base  = dla102x2(pretrained=True)
+            base  = dla102x2(pretrained=pretrained)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
         elif cfg.MODEL.DLA.TYPE == 'dla169':
-            base  = dla169(pretrained=True)
+            base  = dla169(pretrained=pretrained)
             self._out_feature_channels = {'p2': 128, 'p3': 256, 'p4': 512, 'p5': 1024, 'p6': 1024}
 
         self.base_layer = base.base_layer
@@ -490,7 +491,9 @@ def build_dla_from_vision_fpn_backbone(cfg, input_shape: ShapeSpec, priors=None)
         backbone (Backbone): backbone module, must be a subclass of :class:`Backbone`.
     """
 
-    bottom_up = DLABackbone(cfg, input_shape)
+    imagenet_pretrain = cfg.MODEL.WEIGHTS_PRETRAIN + cfg.MODEL.WEIGHTS == ''
+
+    bottom_up = DLABackbone(cfg, input_shape, pretrained=imagenet_pretrain)
     in_features = cfg.MODEL.FPN.IN_FEATURES
     out_channels = cfg.MODEL.FPN.OUT_CHANNELS
 

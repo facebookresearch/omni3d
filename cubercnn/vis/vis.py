@@ -274,11 +274,12 @@ def draw_scene_view(im, K, meshes, text=None, scale=1000, R=None, T=None, zoom_f
             
             im_drawn_rgb = deepcopy(im)
 
-            rendered_img, _ = renderer(meshes_scene)
-            sil_mask = rendered_img[0, :, :, 3].cpu().numpy() > 0.1
-            rendered_img = (rendered_img[0, :, :, :3].cpu().numpy() * 255).astype(np.uint8)
-            
-            im_drawn_rgb[sil_mask] = rendered_img[sil_mask] * blend_weight + im_drawn_rgb[sil_mask] * (1 - blend_weight)
+            # save memory if not blending the render
+            if blend_weight > 0:
+                rendered_img, _ = renderer(meshes_scene)
+                sil_mask = rendered_img[0, :, :, 3].cpu().numpy() > 0.1
+                rendered_img = (rendered_img[0, :, :, :3].cpu().numpy() * 255).astype(np.uint8)    
+                im_drawn_rgb[sil_mask] = rendered_img[sil_mask] * blend_weight + im_drawn_rgb[sil_mask] * (1 - blend_weight)
 
             '''
             Draw edges for image view
