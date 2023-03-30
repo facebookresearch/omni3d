@@ -247,9 +247,6 @@ def get_cuboid_verts(K, box3d, R=None, view_R=None, view_T=None):
     if view_T is not None:
         corners_3d[:, :, -1] += view_T.view(1, 1, 3)[:, :, -1]*1.25
 
-    if (corners_3d[..., -1] <= 0).any():
-        print('Warning: Some vertices appear behind the image plane. Our visualization code does not handle this case yet so some boxes might be displayed wrongly. We are working on a fix')
-
     # project to 2D
     corners_2d = K @ corners_3d.transpose(1, 2)
     corners_2d[:, :2, :] = corners_2d[:, :2, :] / corners_2d[:, 2, :].unsqueeze(1)
