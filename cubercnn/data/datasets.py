@@ -11,7 +11,7 @@ from collections import defaultdict
 from fvcore.common.timer import Timer
 from detectron2.utils.file_io import PathManager
 from detectron2.structures import BoxMode
-from detectron2.data import MetadataCatalog
+from detectron2.data import MetadataCatalog, DatasetCatalog
 
 from cubercnn import util
 
@@ -120,6 +120,22 @@ def is_ignore(anno, filter_settings, image_height):
         ignore |= anno['category_name'] in filter_settings['ignore_names']
 
     return ignore
+
+
+def simple_register(dataset_name, filter_settings, filter_empty=False, datasets_root_path=None):
+
+    if datasets_root_path is None:
+        datasets_root_path = path_to_json = os.path.join('datasets', 'Omni3D',)
+    
+    path_to_json = os.path.join(datasets_root_path, dataset_name + '.json')
+    path_to_image_root = 'datasets'
+
+    DatasetCatalog.register(dataset_name, lambda: load_omni3d_json(
+        path_to_json, path_to_image_root, 
+        dataset_name, filter_settings, filter_empty=filter_empty
+    ))
+
+    MetadataCatalog.get(dataset_name).set(json_file=path_to_json, image_root=path_to_image_root, evaluator_type="coco")
 
 class Omni3D(COCO):
     '''

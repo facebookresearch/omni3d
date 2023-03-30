@@ -967,3 +967,15 @@ def intersect(box_a, box_b, mode='cross'):
 
     else:
         raise ValueError('unknown mode {}'.format(mode))
+
+
+def scaled_sigmoid(vals, min=0.0, max=1.0):
+    """
+    Simple helper function for a scaled sigmoid. 
+    The output is bounded by (min, max)
+    Args:
+        vals (Tensor): input logits to scale
+        min (Tensor or float): the minimum value to scale to.
+        max (Tensor or float): the maximum value to scale to.
+    """
+    return min + (max-min)*torch.sigmoid(vals)

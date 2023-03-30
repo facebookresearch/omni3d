@@ -51,7 +51,7 @@ def get_cfg_defaults(cfg):
     cfg.MODEL.ROI_CUBE_HEAD.FC_DIM = 1024
     
     # the style to predict Z with currently supported
-    # options --> ['direct', 'sigmoid', 'log', 'priors']
+    # options --> ['direct', 'sigmoid', 'log', 'clusters']
     cfg.MODEL.ROI_CUBE_HEAD.Z_TYPE = "direct"
 
     # the style to predict pose with currently supported
@@ -103,6 +103,12 @@ def get_cfg_defaults(cfg):
     
     # Whether or not to use the dimension priors
     cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_ENABLED = True
+
+    # How prior dimensions should be computed? 
+    # The supported modes are ["exp", "sigmoid"]
+    # where exp is unbounded and sigmoid is bounded
+    # between +- 3 standard deviations from the mean.
+    cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_FUNC = 'exp'
 
     # weight for confidence loss. 0 is off.
     cfg.MODEL.ROI_CUBE_HEAD.USE_CONFIDENCE = 1.0

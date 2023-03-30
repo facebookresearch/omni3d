@@ -146,7 +146,39 @@ python tools/train_net.py \
 
 Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
 
-[Coming Soon!] An example script for evaluating any model independent from Cube R-CNN's testing loop is coming soon!
+To run the evaluation on your own models outside of the Cube R-CNN evaluation loop, we recommending using the `Omni3DEvaluationHelper` class from our [evaluation](https://github.com/facebookresearch/omni3d/blob/main/cubercnn/evaluation/omni3d_evaluation.py) similar to how it is utilized [here](https://github.com/facebookresearch/omni3d/blob/main/tools/train_net.py). 
+
+The evaluator relies on the detectron2 MetadataCatalog for keeping track of category names and contiguous IDs. Hence, it is important to set these variables appropriately. 
+```
+# (list[str]) the category names in their contiguous order
+MetadataCatalog.get('omni3d_model').thing_classes = ... 
+
+# (dict[int: int]) the mapping from Omni3D category IDs to the contiguous order
+MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id = ...
+```
+
+In summary, the evaluator expects a list of image-level predictions in the format of:
+```
+{
+    "image_id": <int> the unique image identifier from Omni3D,
+    "K": <np.array> 3x3 intrinsics matrix for the image,
+    "width": <int> image width,
+    "height": <int> image height,
+    "instances": [
+        {
+            "image_id":  <int> the unique image identifier from Omni3D,
+            "category_id": <int> the contiguous category prediction IDs, 
+                which can be re-mapped to Omni3D's category ID's using
+                MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
+            "bbox": [float] 2D box as [x1, y1, x2, y2] used for IoU2D,
+            "score": <float> the confidence score for the object,
+            "depth": <float> the depth of the center of the object,
+            "bbox3D": list[list[float]] 8x3 corner vertices used for IoU3D,
+        }
+        ...
+    ]
+}
+```
 
 ## Results <a name="results"></a>
 

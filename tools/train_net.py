@@ -11,13 +11,12 @@ import torch.distributed as dist
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.data import (
-    DatasetCatalog,
-    MetadataCatalog,
-)
-from detectron2.engine import default_argument_parser, default_setup, default_writers, launch
-from detectron2.evaluation import (
-    inference_on_dataset,
+from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.engine import (
+    default_argument_parser, 
+    default_setup, 
+    default_writers, 
+    launch
 )
 from detectron2.solver import build_lr_scheduler
 from detectron2.utils.events import EventStorage
@@ -36,10 +35,13 @@ from cubercnn.data import (
     DatasetMapper3D,
     build_detection_train_loader,
     build_detection_test_loader,
-    get_omni3d_categories
+    get_omni3d_categories,
+    simple_register
 )
 from cubercnn.evaluation import (
-    Omni3DEvaluator, OmniEval,
+    Omni3DEvaluator, Omni3Deval,
+    Omni3DEvaluationHelper,
+    inference_on_dataset
 )
 from cubercnn.modeling.proposal_generator import RPNWithIgnore
 from cubercnn.modeling.roi_heads import ROIHeads3D
@@ -48,268 +50,68 @@ from cubercnn.modeling.backbone import build_dla_from_vision_fpn_backbone
 from cubercnn import util, vis, data
 import cubercnn.vis.logperf as utils_logperf
 
-
 MAX_TRAINING_ATTEMPTS = 10
 
 
 def do_test(cfg, model, iteration='final', storage=None):
-    
-    results = OrderedDict()
-
-    # These store store per-dataset results to be printed
-    results_analysis = OrderedDict()
-    results_dataset = OrderedDict()
-    results_omni3d = OrderedDict()
-    
+        
     filter_settings = data.get_filter_settings_from_cfg(cfg)    
     filter_settings['visibility_thres'] = cfg.TEST.VISIBILITY_THRES
     filter_settings['truncation_thres'] = cfg.TEST.TRUNCATION_THRES
     filter_settings['min_height_thres'] = 0.0625
     filter_settings['max_depth'] = 1e8
 
-    overall_imgIds = set()
-    overall_catIds = set()
-    
-    # These store the evaluations for each category and area,
-    # concatenated from ALL evaluated datasets. Doing so avoids
-    # the need to re-compute them when accumulating results.
-    evals_per_cat_area2D = {}
-    evals_per_cat_area3D = {}
-    
-    datasets_test = cfg.DATASETS.TEST
+    dataset_names_test = cfg.DATASETS.TEST
+    only_2d = cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_3D == 0.0
+    output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", 'iter_{}'.format(iteration))
 
-    for dataset_name in datasets_test:
+    eval_helper = Omni3DEvaluationHelper(
+        dataset_names_test, 
+        filter_settings, 
+        output_folder, 
+        iter_label=iteration,
+        only_2d=only_2d,
+    )
+
+    for dataset_name in dataset_names_test:
         """
         Cycle through each dataset and test them individually.
         This loop keeps track of each per-image evaluation result, 
         so that it doesn't need to be re-computed for the collective.
         """
 
+        '''
+        Distributed Cube R-CNN inference
+        '''
         data_loader = build_detection_test_loader(cfg, dataset_name)
-        only_2d=cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_3D == 0.0
-        output_folder =  os.path.join(cfg.OUTPUT_DIR, "inference", 'iter_{}'.format(iteration), dataset_name)
-        evaluator = Omni3DEvaluator(
-            dataset_name, output_dir=output_folder, 
-            filter_settings=filter_settings, only_2d=only_2d, 
-            eval_prox=('Objectron' in dataset_name or 'SUNRGBD' in dataset_name)
-        )
-
-        results_i = inference_on_dataset(model, data_loader, evaluator)
-        results[dataset_name] = results_i
+        results_json = inference_on_dataset(model, data_loader)
 
         if comm.is_main_process():
             
-            overall_imgIds.update(set(evaluator._omni_api.getImgIds()))
-            overall_catIds.update(set(evaluator._omni_api.getCatIds()))
-
-            logger.info('\n'+results_i['log_str_2D'].replace('mode=2D', '{} iter={} mode=2D'.format(dataset_name, iteration)))
-            
-            # store the partially accumulated evaluations per category per area
-            for key, item in results_i['bbox_2D_evals_per_cat_area'].items():
-                if not key in evals_per_cat_area2D:
-                    evals_per_cat_area2D[key] = []
-                evals_per_cat_area2D[key] += item
-
-            if not only_2d:
-                # store the partially accumulated evaluations per category per area
-                for key, item in results_i['bbox_3D_evals_per_cat_area'].items():
-                    if not key in evals_per_cat_area3D:
-                        evals_per_cat_area3D[key] = []
-                    evals_per_cat_area3D[key] += item
-
-                logger.info('\n'+results_i['log_str_3D'].replace('mode=3D', '{} iter={} mode=3D'.format(dataset_name, iteration)))
-
-            # The set of categories present in the dataset; there should be no duplicates 
-            categories = {cat for cat in cfg.DATASETS.CATEGORY_NAMES if 'AP-{}'.format(cat) in results_i['bbox_2D']}
-            assert len(categories) == len(set(categories)) 
-
-            # default are all NaN
-            general_2D, general_3D, omni_2D, omni_3D = (np.nan,) * 4
-
-            # 2D and 3D performance for categories in dataset; and log
-            general_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in categories])
-            if not only_2d:
-                general_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in categories])
-
-            results_dataset[dataset_name] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D}
-
-            # 2D and 3D performance on Omni3D categories
-            omni3d_dataset_categories = get_omni3d_categories(dataset_name)  # dataset-specific categories
-            if len(omni3d_dataset_categories - categories) == 0:  # omni3d_dataset_categories is a subset of categories
-                omni_2D = np.mean([results_i['bbox_2D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
-                if not only_2d:
-                    omni_3D = np.mean([results_i['bbox_3D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
-            
-            results_omni3d[dataset_name] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
-
-            # Performance analysis
-            extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,)*6
-            if not only_2d:
-                extras_AP15 = results_i['bbox_3D']['AP15']
-                extras_AP25 = results_i['bbox_3D']['AP25']
-                extras_AP50 = results_i['bbox_3D']['AP50']
-                extras_APn = results_i['bbox_3D']['APn']
-                extras_APm = results_i['bbox_3D']['APm']
-                extras_APf = results_i['bbox_3D']['APf']
-
-            results_analysis[dataset_name] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D, "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf}
-
-            # Performance per category
-            results_cat = OrderedDict()
-            for cat in cfg.DATASETS.CATEGORY_NAMES:
-                cat_2D, cat_3D = (np.nan,) * 2
-                if 'AP-{}'.format(cat) in results_i['bbox_2D']:
-                    cat_2D = results_i['bbox_2D']['AP-{}'.format(cat)]
-                    if not only_2d:
-                        cat_3D = results_i['bbox_3D']['AP-{}'.format(cat)]
-                if not np.isnan(cat_2D) or not np.isnan(cat_3D):
-                    results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
-            utils_logperf.print_ap_category_histogram(dataset_name, results_cat)
-        
-        if comm.is_main_process():
             '''
-            Visualize some predictions from the instances. 
+            Individual dataset evaluation
             '''
-            detections = torch.load(os.path.join(output_folder, 'instances_predictions.pth'))
+            eval_helper.add_predictions(dataset_name, results_json)
+            eval_helper.save_predictions(dataset_name)
+            eval_helper.evaluate(dataset_name)
+
+            '''
+            Optionally, visualize some instances
+            '''
+            instances = torch.load(os.path.join(output_folder, dataset_name, 'instances_predictions.pth'))
             log_str = vis.visualize_from_instances(
-                detections, data_loader.dataset, dataset_name, 
-                cfg.INPUT.MIN_SIZE_TEST, output_folder, MetadataCatalog.get('omni3d_model').thing_classes, iteration
+                instances, data_loader.dataset, dataset_name, 
+                cfg.INPUT.MIN_SIZE_TEST, os.path.join(output_folder, dataset_name), 
+                MetadataCatalog.get('omni3d_model').thing_classes, iteration
             )
             logger.info(log_str)
 
-    if comm.is_main_process():        
+    if comm.is_main_process():
+        
         '''
-        Report collective metrics when possible for the the Omni3D dataset.
-        This uses pre-computed evaluation results from each dataset, which were
-        aggregated and cached while evaluating them individually. 
-        This process simply re-accumulate and summarizes them. 
-        '''
-        thing_classes = MetadataCatalog.get('omni3d_model').thing_classes
-        catId2contiguous = MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
-        ordered_things = [thing_classes[catId2contiguous[cid]] for cid in overall_catIds]
-        categories = set(ordered_things)
-
-        evaluator2D = OmniEval(mode='2D')
-        evaluator2D.params.catIds = list(overall_catIds)
-        evaluator2D.params.imgIds = list(overall_imgIds)
-        evaluator2D.evalImgs = True
-        evaluator2D.evals_per_cat_area = evals_per_cat_area2D
-        evaluator2D._paramsEval = copy.deepcopy(evaluator2D.params)
-        evaluator2D.accumulate()
-        summarize_str2D = evaluator2D.summarize()
-        
-        precisions = evaluator2D.eval['precision']
-
-        metrics = ["AP", "AP50", "AP75", "AP95", "APs", "APm", "APl"]
-
-        results2D = {
-            metric: float(
-                evaluator2D.stats[idx] * 100 if evaluator2D.stats[idx] >= 0 else "nan"
-            )
-            for idx, metric in enumerate(metrics)
-        }
-
-        for idx, name in enumerate(ordered_things):
-            precision = precisions[:, :, idx, 0, -1]
-            precision = precision[precision > -1]
-            ap = np.mean(precision) if precision.size else float("nan")
-            results2D.update({"AP-" + "{}".format(name): float(ap * 100)})
-
-        evaluator3D = OmniEval(mode='3D')
-        evaluator3D.params.catIds = list(overall_catIds)
-        evaluator3D.params.imgIds = list(overall_imgIds)
-        evaluator3D.evalImgs = True
-        evaluator3D.evals_per_cat_area = evals_per_cat_area3D
-        evaluator3D._paramsEval = copy.deepcopy(evaluator3D.params)
-        evaluator3D.accumulate()
-        summarize_str3D = evaluator3D.summarize()
-        
-        precisions = evaluator3D.eval['precision']
-
-        metrics = ["AP", "AP15", "AP25", "AP50", "APn", "APm", "APf"]
-
-        results3D = {
-            metric: float(
-                evaluator3D.stats[idx] * 100 if evaluator3D.stats[idx] >= 0 else "nan"
-            )
-            for idx, metric in enumerate(metrics)
-        }
-
-        for idx, name in enumerate(ordered_things):
-            precision = precisions[:, :, idx, 0, -1]
-            precision = precision[precision > -1]
-            ap = np.mean(precision) if precision.size else float("nan")
-            results3D.update({"AP-" + "{}".format(name): float(ap * 100)})
-
-
-        # All concat categories
-        general_2D, general_3D = (np.nan,) * 2
-
-        general_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in categories])
-        if not only_2d:
-            general_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in categories])
-
-        # Analysis performance
-        extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,) * 6
-        if not only_2d:
-            extras_AP15 = results3D['AP15']
-            extras_AP25 = results3D['AP25']
-            extras_AP50 = results3D['AP50']
-            extras_APn = results3D['APn']
-            extras_APm = results3D['APm']
-            extras_APf = results3D['APf']
-
-        results_analysis["<Concat>"] = {"iters": iteration, "AP2D": general_2D, "AP3D": general_3D, "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf}
-
-        # Omni3D Outdoor performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_outdoor_categories = get_omni3d_categories("omni3d_out")
-        if len(omni3d_outdoor_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
-            if not only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
-
-        results_omni3d["Omni3D_Out"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
-
-        # Omni3D Indoor performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_indoor_categories = get_omni3d_categories("omni3d_in")
-        if len(omni3d_indoor_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
-            if not only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
-
-        results_omni3d["Omni3D_In"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
-
-        # Omni3D performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_categories = get_omni3d_categories("omni3d")
-        if len(omni3d_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_categories])
-            if not only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_categories])
-
-        results_omni3d["Omni3D"] = {"iters": iteration, "AP2D": omni_2D, "AP3D": omni_3D}
-
-        # Per-category performance for the cumulative datasets
-        results_cat = OrderedDict()
-        for cat in cfg.DATASETS.CATEGORY_NAMES:
-            cat_2D, cat_3D = (np.nan,) * 2
-            if 'AP-{}'.format(cat) in results2D:
-                cat_2D = results2D['AP-{}'.format(cat)]
-                if not only_2d:
-                    cat_3D = results3D['AP-{}'.format(cat)]
-            if not np.isnan(cat_2D) or not np.isnan(cat_3D):
-                results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
-        utils_logperf.print_ap_category_histogram("<Concat>", results_cat)
-
-        
-        # utils_logperf.print_ap_dataset_histogram(results_dataset)  # this is redundant -- it is contained in the analysis
-        utils_logperf.print_ap_analysis_histogram(results_analysis)
-        utils_logperf.print_ap_omni_histogram(results_omni3d)
+        Summarize each Omni3D Evaluation metric
+        '''  
+        eval_helper.summarize_all()
 
 
 def do_train(cfg, model, dataset_id_to_unknown_cats, dataset_id_to_src, resume=False):
@@ -536,28 +338,15 @@ def setup(args):
     filter_settings = data.get_filter_settings_from_cfg(cfg)
 
     for dataset_name in cfg.DATASETS.TRAIN:
-        simple_register(cfg, dataset_name, filter_settings, filter_empty=True)
+        simple_register(dataset_name, filter_settings, filter_empty=True)
     
-    datasets_test = cfg.DATASETS.TEST
+    dataset_names_test = cfg.DATASETS.TEST
 
-    for dataset_name in datasets_test:
+    for dataset_name in dataset_names_test:
         if not(dataset_name in cfg.DATASETS.TRAIN):
-            simple_register(cfg, dataset_name, filter_settings, filter_empty=False)
+            simple_register(dataset_name, filter_settings, filter_empty=False)
     
     return cfg
-
-
-def simple_register(cfg, dataset_name, filter_settings, filter_empty=False):
-
-    path_to_json = os.path.join('datasets', 'Omni3D', dataset_name + '.json')
-    path_to_image_root = 'datasets'
-
-    DatasetCatalog.register(dataset_name, lambda: load_omni3d_json(
-        path_to_json, path_to_image_root, 
-        dataset_name, filter_settings, filter_empty=filter_empty
-    ))
-
-    MetadataCatalog.get(dataset_name).set(json_file=path_to_json, image_root=path_to_image_root, evaluator_type="coco")
 
 
 def main(args):

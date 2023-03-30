@@ -9,33 +9,528 @@ import logging
 import os
 import time
 from collections import defaultdict
+from typing import List, Union
 
 import numpy as np
 import pycocotools.mask as maskUtils
 import torch
-from detectron2.data import MetadataCatalog
+from detectron2.utils.memory import retry_if_cuda_oom
+from detectron2.data import MetadataCatalog, DatasetCatalog
 from detectron2.evaluation.coco_evaluation import COCOEvaluator
 from detectron2.structures import BoxMode
 from detectron2.utils.file_io import PathManager
-from detectron2.utils.logger import create_small_table
+from detectron2.utils.logger import create_small_table, log_every_n_seconds
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
+from detectron2.utils.comm import get_world_size, is_main_process
+import detectron2.utils.comm as comm
+from detectron2.evaluation import (
+    DatasetEvaluators, inference_context, DatasetEvaluator
+)
+from collections import OrderedDict, abc
+from contextlib import ExitStack, contextmanager
+from torch import nn
 
+import logging
 from cubercnn.data import Omni3D
 from pytorch3d import _C
 
+import cubercnn.vis.logperf as utils_logperf
+from cubercnn.data import (
+    get_omni3d_categories,
+    simple_register
+)
+
 """
 This file contains
+* Omni3DEvaluationHelper: a helper object to accumulate and summarize evaluation results
 * Omni3DEval: a wrapper around COCOeval to perform 3D bounding evaluation in the detection setting
 * Omni3DEvaluator: a wrapper around COCOEvaluator to collect results on each dataset
-* Params: parameters for the evaluation API
+* Omni3DParams: parameters for the evaluation API
 """
+
+logger = logging.getLogger(__name__)
 
 # Defines the max cross of len(dts) * len(gts)
 # which we will attempt to compute on a GPU. 
 # Fallback is safer computation on a CPU. 
 # 0 is disabled on GPU. 
 MAX_DTS_CROSS_GTS_FOR_IOU3D = 0
+
+class Omni3DEvaluationHelper:
+    def __init__(self, 
+            dataset_names, 
+            filter_settings, 
+            output_folder,
+            iter_label='-',
+            only_2d=False,
+        ):
+        """
+        A helper class to initialize, evaluate and summarize Omni3D metrics. 
+
+        The evaluator relies on the detectron2 MetadataCatalog for keeping track 
+        of category names and contiguous IDs. Hence, it is important to set 
+        these variables appropriately. 
+        
+        # (list[str]) the category names in their contiguous order
+        MetadataCatalog.get('omni3d_model').thing_classes = ... 
+
+        # (dict[int: int]) the mapping from Omni3D category IDs to the contiguous order
+        MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
+
+        Args:
+            dataset_names (list[str]): the individual dataset splits for evaluation
+            filter_settings (dict): the filter settings used for evaluation, see
+                cubercnn/data/datasets.py get_filter_settings_from_cfg
+            output_folder (str): the output folder where results can be stored to disk.
+            iter_label (str): an optional iteration/label used within the summary
+            only_2d (bool): whether the evaluation mode should be 2D or 2D and 3D.
+        """
+        
+        self.dataset_names = dataset_names
+        self.filter_settings = filter_settings
+        self.output_folder = output_folder
+        self.iter_label = iter_label
+        self.only_2d = only_2d
+
+        # Each dataset evaluator is stored here
+        self.evaluators = OrderedDict()
+
+        # These are the main evaluation results
+        self.results = OrderedDict()
+
+        # These store store per-dataset results to be printed
+        self.results_analysis = OrderedDict()
+        self.results_omni3d = OrderedDict()
+
+        self.overall_imgIds = set()
+        self.overall_catIds = set()
+        
+        # These store the evaluations for each category and area,
+        # concatenated from ALL evaluated datasets. Doing so avoids
+        # the need to re-compute them when accumulating results.
+        self.evals_per_cat_area2D = {}
+        self.evals_per_cat_area3D = {}
+        
+        self.output_folders = {
+            dataset_name: os.path.join(self.output_folder, dataset_name)
+            for dataset_name in dataset_names
+        }
+
+        for dataset_name in self.dataset_names:
+            
+            # register any datasets that need it
+            if MetadataCatalog.get(dataset_name).get('json_file') is None:
+                simple_register(dataset_name, filter_settings, filter_empty=False)
+            
+            # create an individual dataset evaluator
+            self.evaluators[dataset_name] = Omni3DEvaluator(
+                dataset_name, output_dir=self.output_folders[dataset_name], 
+                filter_settings=self.filter_settings, only_2d=self.only_2d, 
+                eval_prox=('Objectron' in dataset_name or 'SUNRGBD' in dataset_name),
+                distributed=False, # actual evaluation should be single process
+            )
+
+            self.evaluators[dataset_name].reset()
+            self.overall_imgIds.update(set(self.evaluators[dataset_name]._omni_api.getImgIds()))
+            self.overall_catIds.update(set(self.evaluators[dataset_name]._omni_api.getCatIds()))
+        
+    def add_predictions(self, dataset_name, predictions):
+        """
+        Adds predictions to the evaluator for dataset_name. This can be any number of
+        predictions, including all predictions passed in at once or in batches. 
+
+        Args:
+            dataset_name (str): the dataset split name which the predictions belong to
+            predictions (list[dict]): each item in the list is a dict as follows:
+
+                {
+                    "image_id": <int> the unique image identifier from Omni3D,
+                    "K": <np.array> 3x3 intrinsics matrix for the image,
+                    "width": <int> image width,
+                    "height": <int> image height,
+                    "instances": [
+                        {
+                            "image_id":  <int> the unique image identifier from Omni3D,
+                            "category_id": <int> the contiguous category prediction IDs, 
+                                which can be re-mapped to Omni3D's category ID's using
+                                MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
+                            "bbox": [float] 2D box as [x1, y1, x2, y2] used for IoU2D,
+                            "score": <float> the confidence score for the object,
+                            "depth": <float> the depth of the center of the object,
+                            "bbox3D": list[list[float]] 8x3 corner vertices used for IoU3D,
+                        }
+                        ...
+                    ]
+                }
+        """
+        # concatenate incoming predictions
+        self.evaluators[dataset_name]._predictions += predictions
+
+    def save_predictions(self, dataset_name):
+        """
+        Saves the predictions from dataset_name to disk, in a self.output_folder.
+
+        Args:
+            dataset_name (str): the dataset split name which should be saved.
+        """
+        # save predictions to disk
+        output_folder_dataset = self.output_folders[dataset_name]
+        PathManager.mkdirs(output_folder_dataset)
+        file_path = os.path.join(output_folder_dataset, "instances_predictions.pth")
+        with PathManager.open(file_path, "wb") as f:
+            torch.save(self.evaluators[dataset_name]._predictions, f)
+
+    def evaluate(self, dataset_name):
+        """
+        Runs the evaluation for an individual dataset split, assuming all 
+        predictions have been passed in. 
+
+        Args:
+            dataset_name (str): the dataset split name which should be evalated.
+        """
+        
+        if not dataset_name in self.results:
+            
+            # run evaluation and cache
+            self.results[dataset_name] = self.evaluators[dataset_name].evaluate()
+
+        results = self.results[dataset_name]
+
+        logger.info('\n'+results['log_str_2D'].replace('mode=2D', '{} iter={} mode=2D'.format(dataset_name, self.iter_label)))
+            
+        # store the partially accumulated evaluations per category per area
+        for key, item in results['bbox_2D_evals_per_cat_area'].items():
+            if not key in self.evals_per_cat_area2D:
+                self.evals_per_cat_area2D[key] = []
+            self.evals_per_cat_area2D[key] += item
+
+        if not self.only_2d:
+            # store the partially accumulated evaluations per category per area
+            for key, item in results['bbox_3D_evals_per_cat_area'].items():
+                if not key in self.evals_per_cat_area3D:
+                    self.evals_per_cat_area3D[key] = []
+                self.evals_per_cat_area3D[key] += item
+
+            logger.info('\n'+results['log_str_3D'].replace('mode=3D', '{} iter={} mode=3D'.format(dataset_name, self.iter_label)))
+
+        # full model category names
+        category_names = self.filter_settings['category_names']
+
+        # The set of categories present in the dataset; there should be no duplicates 
+        categories = {cat for cat in category_names if 'AP-{}'.format(cat) in results['bbox_2D']}
+        assert len(categories) == len(set(categories)) 
+
+        # default are all NaN
+        general_2D, general_3D, omni_2D, omni_3D = (np.nan,) * 4
+
+        # 2D and 3D performance for categories in dataset; and log
+        general_2D = np.mean([results['bbox_2D']['AP-{}'.format(cat)] for cat in categories])
+        if not self.only_2d:
+            general_3D = np.mean([results['bbox_3D']['AP-{}'.format(cat)] for cat in categories])
+
+        # 2D and 3D performance on Omni3D categories
+        omni3d_dataset_categories = get_omni3d_categories(dataset_name)  # dataset-specific categories
+        if len(omni3d_dataset_categories - categories) == 0:  # omni3d_dataset_categories is a subset of categories
+            omni_2D = np.mean([results['bbox_2D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
+            if not self.only_2d:
+                omni_3D = np.mean([results['bbox_3D']['AP-{}'.format(cat)] for cat in omni3d_dataset_categories])
+        
+        self.results_omni3d[dataset_name] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Performance analysis
+        extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,)*6
+        if not self.only_2d:
+            extras_AP15 = results['bbox_3D']['AP15']
+            extras_AP25 = results['bbox_3D']['AP25']
+            extras_AP50 = results['bbox_3D']['AP50']
+            extras_APn = results['bbox_3D']['APn']
+            extras_APm = results['bbox_3D']['APm']
+            extras_APf = results['bbox_3D']['APf']
+
+        self.results_analysis[dataset_name] = {
+            "iters": self.iter_label, 
+            "AP2D": general_2D, "AP3D": general_3D, 
+            "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, 
+            "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf
+        }
+
+        # Performance per category
+        results_cat = OrderedDict()
+        for cat in category_names:
+            cat_2D, cat_3D = (np.nan,) * 2
+            if 'AP-{}'.format(cat) in results['bbox_2D']:
+                cat_2D = results['bbox_2D']['AP-{}'.format(cat)]
+                if not self.only_2d:
+                    cat_3D = results['bbox_3D']['AP-{}'.format(cat)]
+            if not np.isnan(cat_2D) or not np.isnan(cat_3D):
+                results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
+        utils_logperf.print_ap_category_histogram(dataset_name, results_cat)
+
+    def summarize_all(self,):
+        '''
+        Report collective metrics when possible for the the Omni3D dataset.
+        This uses pre-computed evaluation results from each dataset, 
+        which were aggregated and cached while evaluating individually. 
+        This process simply re-accumulate and summarizes them. 
+        '''
+
+        # First, double check that we have all the evaluations
+        for dataset_name in self.dataset_names:
+            if not dataset_name in self.results:
+                self.evaluate(dataset_name)
+
+        thing_classes = MetadataCatalog.get('omni3d_model').thing_classes
+        catId2contiguous = MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
+        ordered_things = [thing_classes[catId2contiguous[cid]] for cid in self.overall_catIds]
+        categories = set(ordered_things)
+
+        evaluator2D = Omni3Deval(mode='2D')
+        evaluator2D.params.catIds = list(self.overall_catIds)
+        evaluator2D.params.imgIds = list(self.overall_imgIds)
+        evaluator2D.evalImgs = True
+        evaluator2D.evals_per_cat_area = self.evals_per_cat_area2D
+        evaluator2D._paramsEval = copy.deepcopy(evaluator2D.params)
+        evaluator2D.accumulate()
+        summarize_str2D = evaluator2D.summarize()
+        
+        precisions = evaluator2D.eval['precision']
+
+        metrics = ["AP", "AP50", "AP75", "AP95", "APs", "APm", "APl"]
+
+        results2D = {
+            metric: float(
+                evaluator2D.stats[idx] * 100 if evaluator2D.stats[idx] >= 0 else "nan"
+            )
+            for idx, metric in enumerate(metrics)
+        }
+
+        for idx, name in enumerate(ordered_things):
+            precision = precisions[:, :, idx, 0, -1]
+            precision = precision[precision > -1]
+            ap = np.mean(precision) if precision.size else float("nan")
+            results2D.update({"AP-" + "{}".format(name): float(ap * 100)})
+
+        evaluator3D = Omni3Deval(mode='3D')
+        evaluator3D.params.catIds = list(self.overall_catIds)
+        evaluator3D.params.imgIds = list(self.overall_imgIds)
+        evaluator3D.evalImgs = True
+        evaluator3D.evals_per_cat_area = self.evals_per_cat_area3D
+        evaluator3D._paramsEval = copy.deepcopy(evaluator3D.params)
+        evaluator3D.accumulate()
+        summarize_str3D = evaluator3D.summarize()
+        
+        precisions = evaluator3D.eval['precision']
+
+        metrics = ["AP", "AP15", "AP25", "AP50", "APn", "APm", "APf"]
+
+        results3D = {
+            metric: float(
+                evaluator3D.stats[idx] * 100 if evaluator3D.stats[idx] >= 0 else "nan"
+            )
+            for idx, metric in enumerate(metrics)
+        }
+
+        for idx, name in enumerate(ordered_things):
+            precision = precisions[:, :, idx, 0, -1]
+            precision = precision[precision > -1]
+            ap = np.mean(precision) if precision.size else float("nan")
+            results3D.update({"AP-" + "{}".format(name): float(ap * 100)})
+
+
+        # All concat categories
+        general_2D, general_3D = (np.nan,) * 2
+
+        general_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in categories])
+        if not self.only_2d:
+            general_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in categories])
+
+        # Analysis performance
+        extras_AP15, extras_AP25, extras_AP50, extras_APn, extras_APm, extras_APf = (np.nan,) * 6
+        if not self.only_2d:
+            extras_AP15 = results3D['AP15']
+            extras_AP25 = results3D['AP25']
+            extras_AP50 = results3D['AP50']
+            extras_APn = results3D['APn']
+            extras_APm = results3D['APm']
+            extras_APf = results3D['APf']
+
+        self.results_analysis["<Concat>"] = {
+            "iters": self.iter_label, 
+            "AP2D": general_2D, "AP3D": general_3D, 
+            "AP3D@15": extras_AP15, "AP3D@25": extras_AP25, "AP3D@50": extras_AP50, 
+            "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf
+        }
+
+        # Omni3D Outdoor performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_outdoor_categories = get_omni3d_categories("omni3d_out")
+        if len(omni3d_outdoor_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
+            if not self.only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
+
+        self.results_omni3d["Omni3D_Out"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Omni3D Indoor performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_indoor_categories = get_omni3d_categories("omni3d_in")
+        if len(omni3d_indoor_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
+            if not self.only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
+
+        self.results_omni3d["Omni3D_In"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Omni3D performance
+        omni_2D, omni_3D = (np.nan,) * 2
+
+        omni3d_categories = get_omni3d_categories("omni3d")
+        if len(omni3d_categories - categories) == 0:
+            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_categories])
+            if not self.only_2d:
+                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_categories])
+
+        self.results_omni3d["Omni3D"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
+
+        # Per-category performance for the cumulative datasets
+        results_cat = OrderedDict()
+        for cat in self.filter_settings['category_names']:
+            cat_2D, cat_3D = (np.nan,) * 2
+            if 'AP-{}'.format(cat) in results2D:
+                cat_2D = results2D['AP-{}'.format(cat)]
+                if not self.only_2d:
+                    cat_3D = results3D['AP-{}'.format(cat)]
+            if not np.isnan(cat_2D) or not np.isnan(cat_3D):
+                results_cat[cat] = {"AP2D": cat_2D, "AP3D": cat_3D}
+        
+        utils_logperf.print_ap_category_histogram("<Concat>", results_cat)
+        utils_logperf.print_ap_analysis_histogram(self.results_analysis)
+        utils_logperf.print_ap_omni_histogram(self.results_omni3d)
+
+
+def inference_on_dataset(model, data_loader):
+    """
+    Run model on the data_loader. 
+    Also benchmark the inference speed of `model.__call__` accurately.
+    The model will be used in eval mode.
+
+    Args:
+        model (callable): a callable which takes an object from
+            `data_loader` and returns some outputs.
+
+            If it's an nn.Module, it will be temporarily set to `eval` mode.
+            If you wish to evaluate a model in `training` mode instead, you can
+            wrap the given model and override its behavior of `.eval()` and `.train()`.
+        data_loader: an iterable object with a length.
+            The elements it generates will be the inputs to the model.
+
+    Returns:
+        The return value of `evaluator.evaluate()`
+    """
+    
+    num_devices = get_world_size()
+    distributed = num_devices > 1
+    logger.info("Start inference on {} batches".format(len(data_loader)))
+
+    total = len(data_loader)  # inference data loader must have a fixed length
+
+    num_warmup = min(5, total - 1)
+    start_time = time.perf_counter()
+    total_data_time = 0
+    total_compute_time = 0
+    total_eval_time = 0
+
+    inference_json = []
+
+    with ExitStack() as stack:
+        if isinstance(model, nn.Module):
+            stack.enter_context(inference_context(model))
+        stack.enter_context(torch.no_grad())
+
+        start_data_time = time.perf_counter()
+        for idx, inputs in enumerate(data_loader):
+            total_data_time += time.perf_counter() - start_data_time
+            if idx == num_warmup:
+                start_time = time.perf_counter()
+                total_data_time = 0
+                total_compute_time = 0
+                total_eval_time = 0
+
+            start_compute_time = time.perf_counter()
+            outputs = model(inputs)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            total_compute_time += time.perf_counter() - start_compute_time
+
+            start_eval_time = time.perf_counter()
+
+            for input, output in zip(inputs, outputs):
+
+                prediction = {
+                    "image_id": input["image_id"],
+                    "K": input["K"],
+                    "width": input["width"],
+                    "height": input["height"],
+                }
+
+                # convert to json format
+                instances = output["instances"].to('cpu')
+                prediction["instances"] = instances_to_coco_json(instances, input["image_id"])
+
+                # store in overall predictions
+                inference_json.append(prediction)
+
+            total_eval_time += time.perf_counter() - start_eval_time
+
+            iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
+            data_seconds_per_iter = total_data_time / iters_after_start
+            compute_seconds_per_iter = total_compute_time / iters_after_start
+            eval_seconds_per_iter = total_eval_time / iters_after_start
+            total_seconds_per_iter = (time.perf_counter() - start_time) / iters_after_start
+            if idx >= num_warmup * 2 or compute_seconds_per_iter > 5:
+                eta = datetime.timedelta(seconds=int(total_seconds_per_iter * (total - idx - 1)))
+                log_every_n_seconds(
+                    logging.INFO,
+                    (
+                        f"Inference done {idx + 1}/{total}. "
+                        f"Dataloading: {data_seconds_per_iter:.4f} s/iter. "
+                        f"Inference: {compute_seconds_per_iter:.4f} s/iter. "
+                        f"Eval: {eval_seconds_per_iter:.4f} s/iter. "
+                        f"Total: {total_seconds_per_iter:.4f} s/iter. "
+                        f"ETA={eta}"
+                    ),
+                    n=5,
+                )
+            start_data_time = time.perf_counter()
+
+    # Measure the time only for this worker (before the synchronization barrier)
+    total_time = time.perf_counter() - start_time
+    total_time_str = str(datetime.timedelta(seconds=total_time))
+    # NOTE this format is parsed by grep
+    logger.info(
+        "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
+            total_time_str, total_time / (total - num_warmup), num_devices
+        )
+    )
+    total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
+    logger.info(
+        "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(
+            total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
+        )
+    )
+
+    if distributed:
+        comm.synchronize()
+        inference_json = comm.gather(inference_json, dst=0)
+        inference_json = list(itertools.chain(*inference_json))
+
+        if not comm.is_main_process():
+            return []
+
+    return inference_json
 
 class Omni3DEvaluator(COCOEvaluator):
     def __init__(
@@ -149,7 +644,7 @@ class Omni3DEvaluator(COCOEvaluator):
                 prediction["instances"] = output["instances"]
 
             # tensor instances format
-            else:    
+            else: 
                 instances = output["instances"].to(self._cpu_device)
                 prediction["instances"] = instances_to_coco_json(
                     instances, input["image_id"]
@@ -162,7 +657,7 @@ class Omni3DEvaluator(COCOEvaluator):
         """
         Derive the desired score numbers from summarized COCOeval.
         Args:
-            omni_eval (None or OmniEval): None represents no predictions from model.
+            omni_eval (None or Omni3Deval): None represents no predictions from model.
             iou_type (str):
             mode (str): either "2D" or "3D"
             class_names (None or list[str]): if provided, will use it to predict
@@ -349,7 +844,7 @@ def _evaluate_predictions_on_omni(
     modes = ["2D"] if only_2d else ["2D", "3D"]
 
     for mode in modes:
-        omni_eval = OmniEval(
+        omni_eval = Omni3Deval(
             omni_gt, omni_dt, iouType=iou_type, mode=mode, eval_prox=eval_prox
         )
         if img_ids is not None:
@@ -411,9 +906,9 @@ def instances_to_coco_json(instances, img_id):
 
 
 # ---------------------------------------------------------------------
-#                               Params
+#                               Omni3DParams
 # ---------------------------------------------------------------------
-class Params:
+class Omni3DParams:
     """
     Params for the Omni evaluation API
     """
@@ -484,9 +979,9 @@ class Params:
 
 
 # ---------------------------------------------------------------------
-#                               OmniEval
+#                               Omni3Deval
 # ---------------------------------------------------------------------
-class OmniEval(COCOeval):
+class Omni3Deval(COCOeval):
     """
     Wraps COCOeval for 2D or 3D box evaluation depending on mode
     """
@@ -523,7 +1018,7 @@ class OmniEval(COCOeval):
         self.eval = {}  # accumulated evaluation results
         self._gts = defaultdict(list)  # gt for evaluation
         self._dts = defaultdict(list)  # dt for evaluation
-        self.params = Params(mode)  # parameters
+        self.params = Omni3DParams(mode)  # parameters
         self._paramsEval = {}  # parameters for evaluation
         self.stats = []  # result summarization
         self.ious = {}  # ious between all gts and dts
@@ -798,15 +1293,16 @@ class OmniEval(COCOeval):
         elif len(d) > 0 and len(g) > 0:
             
             # For 3D eval, we want to run IoU in CUDA if available
-            device = (
-                torch.device("cuda:0") 
-                if torch.cuda.is_available() and len(d) * len(g) < MAX_DTS_CROSS_GTS_FOR_IOU3D
-                else torch.device("cpu")
-            )
-
-            dd = torch.tensor(d, device=device, dtype=torch.float32)
-            gg = torch.tensor(g, device=device, dtype=torch.float32)
-            ious = _C.iou_box3d(dd, gg)[1].cpu().numpy()
+            if torch.cuda.is_available() and len(d) * len(g) < MAX_DTS_CROSS_GTS_FOR_IOU3D:
+                device = torch.device("cuda:0") 
+                dd = torch.tensor(d, device=device, dtype=torch.float32)
+                gg = torch.tensor(g, device=device, dtype=torch.float32)
+                ious = retry_if_cuda_oom(_C.iou_box3d)(dd, gg)[1].cpu().numpy()
+            else:
+                device = torch.device("cpu")
+                dd = torch.tensor(d, device=device, dtype=torch.float32)
+                gg = torch.tensor(g, device=device, dtype=torch.float32)
+                ious = _C.iou_box3d(dd, gg)[1].cpu().numpy()
         
         else:
             ious = []

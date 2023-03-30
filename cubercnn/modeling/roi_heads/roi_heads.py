@@ -59,6 +59,7 @@ class ROIHeads3D(StandardROIHeads):
         cluster_bins: int,
         priors = None,
         dims_priors_enabled = None,
+        dims_priors_func = None,
         disentangled_loss=None,
         virtual_depth=None,
         virtual_focal=None,
@@ -104,6 +105,7 @@ class ROIHeads3D(StandardROIHeads):
         # related to priors
         self.cluster_bins = cluster_bins
         self.dims_priors_enabled = dims_priors_enabled
+        self.dims_priors_func = dims_priors_func
 
         # if there is no 3D loss, then we don't need any heads. 
         if loss_w_3d > 0:
@@ -128,7 +130,7 @@ class ROIHeads3D(StandardROIHeads):
                 self.priors_z_scales = nn.Parameter(torch.ones(self.num_classes, self.cluster_bins))
 
             # the depth can be based on priors
-            if self.z_type == 'priors':
+            if self.z_type == 'clusters':
                 
                 assert self.cluster_bins > 1, 'To use z_type of priors, there must be more than 1 cluster bin'
                 
@@ -189,6 +191,7 @@ class ROIHeads3D(StandardROIHeads):
             'z_type': cfg.MODEL.ROI_CUBE_HEAD.Z_TYPE,
             'pose_type': cfg.MODEL.ROI_CUBE_HEAD.POSE_TYPE,
             'dims_priors_enabled': cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_ENABLED,
+            'dims_priors_func': cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_FUNC,
             'disentangled_loss': cfg.MODEL.ROI_CUBE_HEAD.DISENTANGLED_LOSS,
             'virtual_depth': cfg.MODEL.ROI_CUBE_HEAD.VIRTUAL_DEPTH,
             'virtual_focal': cfg.MODEL.ROI_CUBE_HEAD.VIRTUAL_FOCAL,
@@ -460,13 +463,24 @@ class ROIHeads3D(StandardROIHeads):
         cube_xy = torch.cat((cube_x.unsqueeze(1), cube_y.unsqueeze(1)), dim=1)
 
         cube_dims_norm = cube_dims
-        cube_dims = torch.exp(cube_dims_norm.clip(max=5))
-
+        
         if self.dims_priors_enabled:
 
             # gather prior dimensions
-            prior_dims = self.priors_dims_per_cat.detach().repeat([n, 1, 1, 1])[fg_inds, box_classes][:, 0, :]
-            cube_dims = cube_dims * prior_dims
+            prior_dims = self.priors_dims_per_cat.detach().repeat([n, 1, 1, 1])[fg_inds, box_classes]
+            prior_dims_mean = prior_dims[:, 0, :]
+            prior_dims_std = prior_dims[:, 1, :]
+
+            if self.dims_priors_func == 'sigmoid':
+                prior_dims_min = (prior_dims_mean - 3*prior_dims_std).clip(0.0)
+                prior_dims_max = (prior_dims_mean + 3*prior_dims_std)
+                cube_dims = util.scaled_sigmoid(cube_dims_norm, min=prior_dims_min, max=prior_dims_max)
+            elif self.dims_priors_func == 'exp':
+                cube_dims = torch.exp(cube_dims_norm.clip(max=5)) * prior_dims_mean
+
+        else:
+            # no priors are used
+            cube_dims = torch.exp(cube_dims_norm.clip(max=5))
         
         if self.allocentric_pose:
             
@@ -484,7 +498,7 @@ class ROIHeads3D(StandardROIHeads):
             cube_z_norm = cube_z
             cube_z = torch.exp(cube_z)
 
-        elif self.z_type == 'priors':
+        elif self.z_type == 'clusters':
             
             # gather the mean depth, same operation as above, for a n x c result
             z_means = self.priors_z_stats[:, :, 0].T.unsqueeze(0).repeat([n, 1, 1])
@@ -501,8 +515,11 @@ class ROIHeads3D(StandardROIHeads):
             z_means = z_means[fg_inds, box_classes]
             z_stds = z_stds[fg_inds, box_classes]
 
+            z_mins = (z_means - 3*z_stds).clip(0)
+            z_maxs = (z_means + 3*z_stds)
+
             cube_z_norm = cube_z
-            cube_z = (cube_z)*z_stds + z_means
+            cube_z = util.scaled_sigmoid(cube_z, min=z_mins, max=z_maxs)
 
         if self.virtual_depth:
             cube_z = (cube_z * virtual_to_real)
@@ -628,7 +645,7 @@ class ROIHeads3D(StandardROIHeads):
                 elif self.z_type == 'log':
                     loss_z = self.l1_loss(cube_z_norm, torch.log((gt_z * real_to_virtual).clip(0.01)))
 
-                elif self.z_type == 'priors':
+                elif self.z_type == 'clusters':
                     loss_z = self.l1_loss(cube_z_norm, (((gt_z * real_to_virtual) - z_means)/(z_stds)))
             
             total_3D_loss_for_reporting = loss_dims*self.loss_w_dims
