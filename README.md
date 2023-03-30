@@ -146,7 +146,7 @@ python tools/train_net.py \
 
 Our evaluation is similar to COCO evaluation and uses $IoU_{3D}$ (from [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py)) as a metric. We compute the aggregate 3D performance averaged across categories. 
 
-To run the evaluation on your own models outside of the Cube R-CNN evaluation loop, we recommending using the `Omni3DEvaluationHelper` class from our [evaluation](https://github.com/facebookresearch/omni3d/blob/main/cubercnn/evaluation/omni3d_evaluation.py) similar to how it is utilized [here](https://github.com/facebookresearch/omni3d/blob/main/tools/train_net.py). 
+To run the evaluation on your own models outside of the Cube R-CNN evaluation loop, we recommending using the `Omni3DEvaluationHelper` class from our [evaluation](https://github.com/facebookresearch/omni3d/blob/main/cubercnn/evaluation/omni3d_evaluation.py#L60-L88) similar to how it is utilized [here](https://github.com/facebookresearch/omni3d/blob/main/tools/train_net.py#L68-L114). 
 
 The evaluator relies on the detectron2 MetadataCatalog for keeping track of category names and contiguous IDs. Hence, it is important to set these variables appropriately. 
 ```
@@ -168,7 +168,7 @@ In summary, the evaluator expects a list of image-level predictions in the forma
         {
             "image_id":  <int> the unique image identifier from Omni3D,
             "category_id": <int> the contiguous category prediction IDs, 
-                which can be re-mapped to Omni3D's category ID's using
+                which can be mapped from Omni3D's category ID's using
                 MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
             "bbox": [float] 2D box as [x1, y1, x2, y2] used for IoU2D,
             "score": <float> the confidence score for the object,

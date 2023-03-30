@@ -153,7 +153,7 @@ class Omni3DEvaluationHelper:
                         {
                             "image_id":  <int> the unique image identifier from Omni3D,
                             "category_id": <int> the contiguous category prediction IDs, 
-                                which can be re-mapped to Omni3D's category ID's using
+                                which can be mapped from Omni3D's category ID's using
                                 MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
                             "bbox": [float] 2D box as [x1, y1, x2, y2] used for IoU2D,
                             "score": <float> the confidence score for the object,
