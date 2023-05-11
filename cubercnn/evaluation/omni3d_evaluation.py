@@ -10,6 +10,7 @@ import os
 import time
 from collections import defaultdict
 from typing import List, Union
+from typing import Tuple
 
 import numpy as np
 import pycocotools.mask as maskUtils
@@ -34,6 +35,9 @@ from torch import nn
 import logging
 from cubercnn.data import Omni3D
 from pytorch3d import _C
+import torch.nn.functional as F
+
+from pytorch3d.ops.iou_box3d import _box_planes, _box_triangles
 
 import cubercnn.vis.logperf as utils_logperf
 from cubercnn.data import (
@@ -56,6 +60,110 @@ logger = logging.getLogger(__name__)
 # Fallback is safer computation on a CPU. 
 # 0 is disabled on GPU. 
 MAX_DTS_CROSS_GTS_FOR_IOU3D = 0
+
+
+def _check_coplanar(boxes: torch.Tensor, eps: float = 1e-4) -> torch.BoolTensor:
+    """
+    Checks that plane vertices are coplanar.
+    Returns a bool tensor of size B, where True indicates a box is coplanar.
+    """
+    faces = torch.tensor(_box_planes, dtype=torch.int64, device=boxes.device)
+    verts = boxes.index_select(index=faces.view(-1), dim=1)
+    B = boxes.shape[0]
+    P, V = faces.shape
+    # (B, P, 4, 3) -> (B, P, 3)
+    v0, v1, v2, v3 = verts.reshape(B, P, V, 3).unbind(2)
+
+    # Compute the normal
+    e0 = F.normalize(v1 - v0, dim=-1)
+    e1 = F.normalize(v2 - v0, dim=-1)
+    normal = F.normalize(torch.cross(e0, e1, dim=-1), dim=-1)
+
+    # Check the fourth vertex is also on the same plane
+    mat1 = (v3 - v0).view(B, 1, -1)  # (B, 1, P*3)
+    mat2 = normal.view(B, -1, 1)  # (B, P*3, 1)
+    
+    return (mat1.bmm(mat2).abs() < eps).view(B)
+
+
+def _check_nonzero(boxes: torch.Tensor, eps: float = 1e-8) -> torch.BoolTensor:
+    """
+    Checks that the sides of the box have a non zero area.
+    Returns a bool tensor of size B, where True indicates a box is nonzero.
+    """
+    faces = torch.tensor(_box_triangles, dtype=torch.int64, device=boxes.device)
+    verts = boxes.index_select(index=faces.view(-1), dim=1)
+    B = boxes.shape[0]
+    T, V = faces.shape
+    # (B, T, 3, 3) -> (B, T, 3)
+    v0, v1, v2 = verts.reshape(B, T, V, 3).unbind(2)
+
+    normals = torch.cross(v1 - v0, v2 - v0, dim=-1)  # (B, T, 3)
+    face_areas = normals.norm(dim=-1) / 2
+
+    return (face_areas > eps).all(1).view(B)
+
+def box3d_overlap(
+    boxes_dt: torch.Tensor, boxes_gt: torch.Tensor, 
+    eps_coplanar: float = 1e-4, eps_nonzero: float = 1e-8
+) -> torch.Tensor:
+    """
+    Computes the intersection of 3D boxes_dt and boxes_gt.
+
+    Inputs boxes_dt, boxes_gt are tensors of shape (B, 8, 3)
+    (where B doesn't have to be the same for boxes_dt and boxes_gt),
+    containing the 8 corners of the boxes, as follows:
+
+        (4) +---------+. (5)
+            | ` .     |  ` .
+            | (0) +---+-----+ (1)
+            |     |   |     |
+        (7) +-----+---+. (6)|
+            ` .   |     ` . |
+            (3) ` +---------+ (2)
+
+
+    NOTE: Throughout this implementation, we assume that boxes
+    are defined by their 8 corners exactly in the order specified in the
+    diagram above for the function to give correct results. In addition
+    the vertices on each plane must be coplanar.
+    As an alternative to the diagram, this is a unit bounding
+    box which has the correct vertex ordering:
+
+    box_corner_vertices = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [1, 1, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 1, 1],
+    ]
+
+    Args:
+        boxes_dt: tensor of shape (N, 8, 3) of the coordinates of the 1st boxes
+        boxes_gt: tensor of shape (M, 8, 3) of the coordinates of the 2nd boxes
+    Returns:
+        iou: (N, M) tensor of the intersection over union which is
+            defined as: `iou = vol / (vol1 + vol2 - vol)`
+    """
+    # Make sure predictions are coplanar and nonzero 
+    invalid_coplanar = ~_check_coplanar(boxes_dt, eps=eps_coplanar)
+    invalid_nonzero  = ~_check_nonzero(boxes_dt, eps=eps_nonzero)
+
+    ious = _C.iou_box3d(boxes_dt, boxes_gt)[1]
+
+    # Offending boxes are set to zero IoU
+    if invalid_coplanar.any():
+        ious[invalid_coplanar] = 0
+        print('Warning: skipping {:d} non-coplanar boxes at eval.'.format(int(invalid_coplanar.float().sum())))
+    
+    if invalid_nonzero.any():
+        ious[invalid_nonzero] = 0
+        print('Warning: skipping {:d} zero volume boxes at eval.'.format(int(invalid_nonzero.float().sum())))
+
+    return ious
 
 class Omni3DEvaluationHelper:
     def __init__(self, 
@@ -1295,15 +1403,14 @@ class Omni3Deval(COCOeval):
             # For 3D eval, we want to run IoU in CUDA if available
             if torch.cuda.is_available() and len(d) * len(g) < MAX_DTS_CROSS_GTS_FOR_IOU3D:
                 device = torch.device("cuda:0") 
-                dd = torch.tensor(d, device=device, dtype=torch.float32)
-                gg = torch.tensor(g, device=device, dtype=torch.float32)
-                ious = retry_if_cuda_oom(_C.iou_box3d)(dd, gg)[1].cpu().numpy()
             else:
                 device = torch.device("cpu")
-                dd = torch.tensor(d, device=device, dtype=torch.float32)
-                gg = torch.tensor(g, device=device, dtype=torch.float32)
-                ious = _C.iou_box3d(dd, gg)[1].cpu().numpy()
-        
+            
+            dd = torch.tensor(d, device=device, dtype=torch.float32)
+            gg = torch.tensor(g, device=device, dtype=torch.float32)
+
+            ious = box3d_overlap(dd, gg).cpu().numpy()
+
         else:
             ious = []
 
