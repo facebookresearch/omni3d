@@ -772,7 +772,7 @@ def mesh_cuboid(box3d=None, R=None, color=None):
         color = torch.tensor(color).view(1, 1, 3).expand(ninstances, 8, 3).float()
 
     # pass in a tensor of colors per box
-    elif color.ndim == 2: 
+    elif isinstance(color, torch.Tensor) and color.ndim == 2: 
         color = to_float_tensor(color).unsqueeze(1).expand(ninstances, 8, 3).float()
 
     device = verts.device
